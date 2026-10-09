@@ -1,0 +1,14 @@
+# python
+.venv/
+__pycache__/
+*.pyc
+# node
+node_modules/
+web/dist/
+# app data (media cache, db)
+data/
+# os / editors
+.DS_Store
+.idea/
+.vscode/
+.ruff_cache/
