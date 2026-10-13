@@ -31,6 +31,7 @@ Não há testes automatizados; o fluxo foi validado com scripts httpx contra a A
 - Objetos `Song` do `Storage` são compartilhados em memória: mutar e depois `save()`; progresso aparece no estado sem gravar no banco.
 - Permissões: `is_host` = loopback ou cantor com PIN; `require_control` = anfitrião ou cantor da música atual (player, voz guia); dono da entrada ou anfitrião edita tom/dueto.
 - Títulos do YouTube: normalizar NFC e desfazer mojibake (`fix_mojibake`) antes de buscar letra no lrclib.
+- yt-dlp: usar `yt-dlp[default]` (traz o resolvedor de desafios) e `js_runtimes` com node/deno (`JS_RUNTIMES` em `youtube.py`); sem runtime JS faltam formatos. No Colab, cookies exigem PO token: a célula 1 instala deno e o `bgutil-ytdlp-pot-provider` em modo script e a célula 3 usa os clientes `mweb,tv` quando há cookies.
 - Palco: ao trocar o `src` do vídeo o navegador zera `currentTime` e dispara `timeupdate`; por isso o `src` é definido imperativamente no efeito depois de ler `lastTime`. A voz guia é um `<audio>` sincronizado ao vídeo por `playbackRate` e seeks.
 - Na tela `/join` as três seções ficam sempre montadas; o CSS esconde as inativas no celular (abas) e mostra as três colunas a partir de 960 px.
 - pnpm 11 exige `allowBuilds` em `web/pnpm-workspace.yaml` para o esbuild.

@@ -7,7 +7,8 @@ instrumental com IA e busca a letra sincronizada.
 ## Requisitos
 
 - macOS com Apple Silicon (a separação usa a GPU via MPS)
-- `uv`, `node` + `pnpm`, `ffmpeg` e `rubberband` (todos via Homebrew: `brew install uv node pnpm ffmpeg rubberband`)
+- `uv`, `node` + `pnpm`, `ffmpeg` e `rubberband` (todos via Homebrew: `brew install uv node pnpm ffmpeg rubberband`).
+  O yt-dlp usa o `node` como runtime JavaScript para os desafios do YouTube; `deno` também serve.
 
 ## Rodando
 

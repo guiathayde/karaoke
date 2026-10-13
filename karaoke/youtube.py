@@ -11,6 +11,10 @@ import yt_dlp
 
 from .models import Video
 
+# O yt-dlp precisa de um runtime JS (deno ou node 22+) para resolver os desafios do YouTube;
+# sem ele alguns formatos somem. Node já é dependência do projeto (frontend).
+JS_RUNTIMES = {"deno": {}, "node": {}}
+
 _YT_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _YT_URL = re.compile(
     r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/)|youtu\.be/)([A-Za-z0-9_-]{11})"
@@ -58,6 +62,7 @@ def search(query: str, limit: int = 12) -> list[Video]:
         "skip_download": True,
         "noplaylist": True,
         "extract_flat": "in_playlist",
+        "js_runtimes": JS_RUNTIMES,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         if yt_id:
@@ -100,6 +105,7 @@ def download(
         "merge_output_format": "mp4",
         "outtmpl": tmpl,
         "progress_hooks": [hook],
+        "js_runtimes": JS_RUNTIMES,
     }
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"https://www.youtube.com/watch?v={yt_id}", download=True)
