@@ -19,24 +19,47 @@ _NOISE = re.compile(
     re.IGNORECASE,
 )
 _FEAT = re.compile(r"\s*(feat\.?|ft\.?|part\.?|com)\s+.*$", re.IGNORECASE)
+# "Música - Artista - Karaokê", "Nome (Playback)", "Nome | Instrumental": rótulo no fim do título
+_TAIL = re.compile(
+    r"\s*(?:[-–—|:]\s*)?[\(\[]?\s*(?:vers[aã]o\s+)?(?:karaok[eê]|playback|instrumental|com letra|cover)"
+    r"\s*[\)\]]?\s*$",
+    re.IGNORECASE,
+)
 _SEP = re.compile(r"\s+[-–—|]\s+")
 _LRC = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
 
 
 def clean_title(title: str) -> str:
     t = _NOISE.sub("", unicodedata.normalize("NFC", title))
+    for _ in range(3):
+        stripped = _TAIL.sub("", t)
+        if stripped == t:
+            break
+        t = stripped
     t = re.sub(r"\s*[\(\[\{]\s*[\)\]\}]", "", t)
     t = re.sub(r"[\"“”]", "", t)
-    t = re.sub(r"\s{2,}", " ", t).strip(" -–|")
+    t = re.sub(r"\s{2,}", " ", t).strip(" -–|:")
     return t
 
 
 def guess_artist_track(title: str) -> tuple[str, str] | None:
-    parts = _SEP.split(clean_title(title), maxsplit=1)
-    if len(parts) != 2:
+    parts = [p.strip() for p in _SEP.split(clean_title(title)) if p.strip()]
+    if len(parts) < 2:
         return None
-    artist, track = parts[0].strip(), _FEAT.sub("", parts[1]).strip()
+    artist, track = parts[0], _FEAT.sub("", " ".join(parts[1:])).strip()
     return (artist, track) if artist and track else None
+
+
+def title_queries(title: str) -> list[str]:
+    """Consultas candidatas: 'Artista Música', 'Música Artista' (a ordem varia) e o título limpo."""
+    queries: list[str] = []
+    guess = guess_artist_track(title)
+    if guess:
+        queries += [f"{guess[0]} {guess[1]}", f"{guess[1]} {guess[0]}"]
+    cleaned = clean_title(title)
+    if cleaned and cleaned not in queries:
+        queries.append(cleaned)
+    return queries
 
 
 def parse_lrc(text: str) -> list[LyricLine]:
@@ -65,26 +88,19 @@ def _score(item: dict, duration: float | None) -> float | None:
 
 async def fetch_synced(title: str, duration: float | None) -> tuple[list[LyricLine], str] | None:
     """Tenta algumas buscas e devolve (linhas, descrição da fonte) ou None."""
-    queries: list[str] = []
-    guess = guess_artist_track(title)
-    if guess:
-        queries.append(f"{guess[0]} {guess[1]}")
-    cleaned = clean_title(title)
-    if cleaned and cleaned not in queries:
-        queries.append(cleaned)
-    title = unicodedata.normalize("NFC", title)
-    if title not in queries:
-        queries.append(title)
-
+    queries = title_queries(title)
     async with httpx.AsyncClient(timeout=15, headers={"User-Agent": UA}) as client:
         for q in queries:
             try:
                 r = await client.get(f"{API}/search", params={"q": q})
                 r.raise_for_status()
-            except httpx.HTTPError:
+                items = r.json()
+            except (httpx.HTTPError, ValueError):
+                continue
+            if not isinstance(items, list):  # erro ou limite de requisições vem como objeto
                 continue
             best: tuple[float, dict] | None = None
-            for item in r.json():
+            for item in items:
                 s = _score(item, duration)
                 if s is not None and (best is None or s < best[0]):
                     best = (s, item)

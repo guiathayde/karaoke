@@ -164,9 +164,14 @@ class Pipeline:
                 log.exception("falha ao extrair melodia de %s", yt_id)
             self.storage.save(song)
 
-        if song.lyrics is None and song.lyrics_source is None:
+        # versão karaokê já tem a letra no vídeo; nos outros casos a letra é opcional e nunca derruba a música
+        if not entry.is_karaoke_version and song.lyrics is None and song.lyrics_source is None:
             await self._set(song, "lyrics")
-            found = await lyrics_api.fetch_synced(song.video.title, song.video.duration)
+            try:
+                found = await lyrics_api.fetch_synced(song.video.title, song.video.duration)
+            except Exception:
+                log.exception("falha ao buscar letra de %s", yt_id)
+                found = None
             if found:
                 song.lyrics, song.lyrics_source = found
             else:
