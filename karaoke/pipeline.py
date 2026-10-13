@@ -8,8 +8,8 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
+from . import align, melody, separator, youtube
 from . import lyrics as lyrics_api
-from . import melody, separator, youtube
 from .config import Settings
 from .models import QueueEntry, Song, Video
 from .storage import (
@@ -69,6 +69,7 @@ class Pipeline:
         self.current_id: str | None = None
         self._failed_variants: set[str] = set()
         self._failed_melody: set[str] = set()
+        self._failed_align: set[str] = set()
 
     def kick(self) -> None:
         self.wake.set()
@@ -87,6 +88,8 @@ class Pipeline:
                     await self._process(entry, song)
                 elif kind == "melody":
                     await self._render_melody(song)
+                elif kind == "align":
+                    await self._align_lyrics(song)
                 else:
                     await self._render_key(entry, song)
             except Exception as exc:
@@ -96,6 +99,8 @@ class Pipeline:
                     song.error = str(exc)[:300]
                 elif kind == "melody":
                     self._failed_melody.add(song.video.yt_id)
+                elif kind == "align":
+                    self._failed_align.add(song.video.yt_id)
                 else:
                     song.rendering = None
                     self._failed_variants.add(entry_variant_name(entry, self.settings) or "")
@@ -120,6 +125,14 @@ class Pipeline:
                 continue
             if song.has_vocals and not song.has_melody and song.video.yt_id not in self._failed_melody:
                 return entry, song, "melody"
+            if (
+                self.settings.asr_enabled
+                and song.has_vocals
+                and song.lyrics
+                and song.lyrics_aligned is None
+                and song.video.yt_id not in self._failed_align
+            ):
+                return entry, song, "align"
         for entry in self.pending_entries():
             song = self.storage.get(entry.yt_id)
             variant = entry_variant_name(entry, self.settings)
@@ -189,6 +202,24 @@ class Pipeline:
         )
         self.storage.save(song)
         log.info("melodia de %s (cache): %d frames com voz", yt_id, voiced)
+
+    async def _align_lyrics(self, song: Song) -> None:
+        """Alinha os tempos da letra ao canto deste vídeo (as marcações do lrclib são de outra versão)."""
+        yt_id = song.video.yt_id
+        new_lines, stats = await asyncio.to_thread(
+            align.align_song,
+            self.storage.path(yt_id, VOCALS),
+            self.storage.path(yt_id, MELODY),
+            song.lyrics or [],
+            self.settings.align_model,
+        )
+        if stats.get("ok"):
+            song.lyrics = new_lines
+            song.lyrics_aligned = True
+        else:
+            song.lyrics_aligned = False
+        self.storage.save(song)
+        log.info("alinhamento da letra de %s: %s", yt_id, stats)
 
     async def _render_key(self, entry: QueueEntry, song: Song) -> None:
         """Gera a variante com o tom alterado (rubberband) mantendo o andamento."""

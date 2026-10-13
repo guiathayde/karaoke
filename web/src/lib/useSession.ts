@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import type { State } from './types'
+import { useEffect, useRef, useState } from 'react'
+import type { LyricEvent, State } from './types'
 
 interface Progress {
   entry_id: string | null
@@ -10,6 +10,8 @@ export function useSession() {
   const [state, setState] = useState<State | null>(null)
   const [connected, setConnected] = useState(false)
   const [progress, setProgress] = useState<Progress>({ entry_id: null, position: 0 })
+  const [lyric, setLyric] = useState<LyricEvent | null>(null)
+  const seq = useRef(0)
 
   useEffect(() => {
     let ws: WebSocket | null = null
@@ -24,8 +26,10 @@ export function useSession() {
         const msg = JSON.parse(ev.data as string) as
           | { type: 'state'; state: State }
           | { type: 'progress'; entry_id: string | null; position: number }
+          | ({ type: 'lyric' } & Omit<LyricEvent, 'seq'>)
         if (msg.type === 'state') setState(msg.state)
         else if (msg.type === 'progress') setProgress({ entry_id: msg.entry_id, position: msg.position })
+        else if (msg.type === 'lyric') setLyric({ ...msg, seq: ++seq.current })
       }
       ws.onclose = () => {
         setConnected(false)
@@ -41,5 +45,5 @@ export function useSession() {
     }
   }, [])
 
-  return { state, connected, progress }
+  return { state, connected, progress, lyric }
 }

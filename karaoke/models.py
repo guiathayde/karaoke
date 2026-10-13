@@ -38,6 +38,7 @@ class Song(BaseModel):
     lyrics: list[LyricLine] | None = None
     lyrics_source: str | None = None
     has_melody: bool = False
+    lyrics_aligned: bool | None = None  # None = não tentou alinhar a letra ao canto
     variants: list[str] = Field(default_factory=list)  # ex.: instrumental_k+2.mp4
     rendering: str | None = None  # variante de tom em preparo
 
@@ -57,7 +58,8 @@ class QueueEntry(BaseModel):
     is_karaoke_version: bool = False
     key_shift: int = 0
     duet_swap: bool = False
-    scores: dict[str, int] | None = None  # singer_id (ou "mic1"/"mic2") -> pontos
+    scores: dict[str, int] | None = None  # singer_id (ou "mic1"/"mic2") -> pontos (total)
+    score_details: dict[str, dict[str, int]] | None = None  # singer_id -> {pitch, lyrics, total}
     added_at: float
 
 
@@ -167,7 +169,7 @@ class DuetBody(BaseModel):
 
 
 class EndedBody(BaseModel):
-    scores: dict[int, int] | None = None  # mic (1|2) -> pontos
+    scores: dict[int, int] | None = None  # mic (1|2) -> pontos de afinação
 
 
 class GuideUpdateBody(BaseModel):

@@ -34,6 +34,9 @@ export function scaleMask(key: number | null, scale: Scale): boolean[] {
 interface Chain {
   hpf: BiquadFilterNode
   worklet: AudioWorkletNode
+  tap: AudioWorkletNode
+  mute: GainNode
+  ws: WebSocket | null
   gain: GainNode
   analyser: AnalyserNode
   pitch: PitchInfo
@@ -62,6 +65,8 @@ export class MicEngine {
   private sources: AudioNode[] = []
   private levelBuf = new Float32Array(1024)
   private workletReady: Promise<void>
+  /** Tempo atual do vídeo (ou null fora de reprodução); carimba o áudio enviado ao servidor. */
+  timeSource: (() => number | null) | null = null
 
   constructor() {
     this.ctx = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 })
@@ -74,7 +79,10 @@ export class MicEngine {
     this.bus.connect(this.reverbSend)
     this.reverbSend.connect(this.convolver)
     this.convolver.connect(this.ctx.destination)
-    this.workletReady = this.ctx.audioWorklet.addModule('/worklets/autotune.js')
+    this.workletReady = Promise.all([
+      this.ctx.audioWorklet.addModule('/worklets/autotune.js'),
+      this.ctx.audioWorklet.addModule('/worklets/tap.js'),
+    ]).then(() => undefined)
   }
 
   get running(): boolean {
@@ -119,23 +127,34 @@ export class MicEngine {
       mono.channelCount = 1
       mono.channelCountMode = 'explicit'
       src.connect(mono)
-      this.chains[0] = this.buildChain(mono)
+      this.chains[0] = this.buildChain(mono, 0, 0)
       this.chains[1] = null
     } else if (config.mode === 'stereo') {
       const src = await open(config.deviceA, 2)
       const splitter = this.ctx.createChannelSplitter(2)
       src.connect(splitter)
-      this.chains[0] = this.buildChain(splitter, 0)
-      this.chains[1] = this.buildChain(splitter, 1)
+      this.chains[0] = this.buildChain(splitter, 0, 0)
+      this.chains[1] = this.buildChain(splitter, 1, 1)
     } else {
       const a = await open(config.deviceA, 1)
       const b = await open(config.deviceB, 1)
-      this.chains[0] = this.buildChain(a)
-      this.chains[1] = this.buildChain(b)
+      this.chains[0] = this.buildChain(a, 0, 0)
+      this.chains[1] = this.buildChain(b, 0, 1)
     }
   }
 
-  private buildChain(source: AudioNode, outputIndex = 0): Chain {
+  private connectMicSocket(chain: Chain, index: 0 | 1): void {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws'
+    const ws = new WebSocket(`${proto}://${location.host}/ws/mic/${index + 1}`)
+    ws.binaryType = 'arraybuffer'
+    ws.onclose = () => {
+      if (this.chains[index] === chain) window.setTimeout(() => this.connectMicSocket(chain, index), 2000)
+    }
+    ws.onerror = () => ws.close()
+    chain.ws = ws
+  }
+
+  private buildChain(source: AudioNode, outputIndex: number, index: 0 | 1): Chain {
     const hpf = this.ctx.createBiquadFilter()
     hpf.type = 'highpass'
     hpf.frequency.value = 80
@@ -151,15 +170,47 @@ export class MicEngine {
     const gain = this.ctx.createGain()
     const analyser = this.ctx.createAnalyser()
     analyser.fftSize = 1024
-    const chain: Chain = { hpf, worklet, gain, analyser, pitch: { freq: 0, conf: 0, shift: 0, rms: 0 } }
+    const tap = new AudioWorkletNode(this.ctx, 'tap', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      channelCount: 1,
+      channelCountMode: 'explicit',
+    })
+    const mute = this.ctx.createGain()
+    mute.gain.value = 0
+    const chain: Chain = {
+      hpf,
+      worklet,
+      tap,
+      mute,
+      ws: null,
+      gain,
+      analyser,
+      pitch: { freq: 0, conf: 0, shift: 0, rms: 0 },
+    }
     worklet.port.onmessage = (e) => {
       chain.pitch = e.data as PitchInfo
     }
+    tap.port.onmessage = (e) => {
+      const t = this.timeSource?.()
+      const ws = chain.ws
+      if (t === null || t === undefined || !ws || ws.readyState !== WebSocket.OPEN) return
+      const samples = e.data as ArrayBuffer
+      const frame = new ArrayBuffer(8 + samples.byteLength)
+      new DataView(frame).setFloat64(0, t, true)
+      new Uint8Array(frame, 8).set(new Uint8Array(samples))
+      ws.send(frame)
+    }
     source.connect(hpf, outputIndex)
     hpf.connect(worklet)
+    hpf.connect(tap)
+    tap.connect(mute)
+    mute.connect(this.ctx.destination)
     worklet.connect(gain)
     gain.connect(analyser)
     gain.connect(this.bus)
+    this.connectMicSocket(chain, index)
     return chain
   }
 
@@ -209,8 +260,17 @@ export class MicEngine {
       if (!c) continue
       c.hpf.disconnect()
       c.worklet.disconnect()
+      c.tap.disconnect()
+      c.mute.disconnect()
       c.gain.disconnect()
       c.worklet.port.onmessage = null
+      c.tap.port.onmessage = null
+      const ws = c.ws
+      c.ws = null
+      if (ws) {
+        ws.onclose = null
+        ws.close()
+      }
     }
     this.sources = []
     this.streams = []

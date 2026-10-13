@@ -34,6 +34,10 @@ class Settings:
     separation_model: str = field(
         default_factory=lambda: _env("SEPARATION_MODEL", "UVR-MDX-NET-Inst_HQ_4.onnx")
     )
+    # Reconhecimento de fala (faster-whisper): "base" ao vivo, "small" para alinhar a letra offline
+    asr_enabled: bool = field(default_factory=lambda: _env("ASR", "1") not in ("0", "false", "no"))
+    asr_model: str = field(default_factory=lambda: _env("ASR_MODEL", "base"))
+    align_model: str = field(default_factory=lambda: _env("ALIGN_MODEL", "small"))
 
     @property
     def media_dir(self) -> Path:

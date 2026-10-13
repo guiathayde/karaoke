@@ -6,9 +6,11 @@ import asyncio
 import io
 import logging
 import socket
+import struct
 from contextlib import asynccontextmanager
 from typing import Any
 
+import numpy as np
 import segno
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, HTMLResponse, Response
@@ -17,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from . import importer, youtube
 from .config import settings
 from .hub import Hub
+from .lyric_score import LyricScorer
 from .models import (
     AddToQueueBody,
     DuetBody,
@@ -100,6 +103,32 @@ def changed() -> None:
     session.refresh_player()
     hub.notify()
     pipeline.kick()
+    _sync_scorer()
+
+
+# --- pontuação de letra: um avaliador por música em reprodução ---------------
+scorers: dict[str, LyricScorer] = {}
+
+
+def _sync_scorer() -> None:
+    """Descarta avaliadores de músicas que já não são a atual."""
+    cur = session.current()
+    for entry_id in list(scorers):
+        if cur is None or entry_id != cur.id:
+            scorers.pop(entry_id).stop()
+
+
+def _scorer_for_current() -> LyricScorer | None:
+    cur = session.current()
+    if cur is None or not settings.asr_enabled:
+        return None
+    if cur.id in scorers:
+        return scorers[cur.id]
+    song = storage.get(cur.yt_id)
+    if song is None or not song.lyrics or session.player.status not in ("playing", "paused"):
+        return None
+    scorers[cur.id] = LyricScorer(cur, song, session.singers, settings.asr_model, hub.send)
+    return scorers[cur.id]
 
 
 pipeline = Pipeline(
@@ -361,10 +390,34 @@ async def player_progress(body: ProgressBody, request: Request) -> Response:
     return Response(status_code=204)
 
 
+@app.post("/api/player/finish")
+async def player_finish(request: Request, body: EndedBody | None = None) -> dict[str, Any]:
+    """Fim da música: junta afinação (do palco) e letra (do servidor) por cantor, sem avançar a fila."""
+    require_host(request)
+    cur = session.current()
+    if cur is None:
+        return {"score_details": {}}
+    pitch = session._attribute_scores(cur, body.scores) if body and body.scores else {}
+    scorer = scorers.get(cur.id)
+    lyrics = scorer.totals() if scorer else {}
+    details: dict[str, dict[str, int]] = {}
+    for who in set(pitch) | set(lyrics):
+        parts = {k: v for k, v in (("pitch", pitch.get(who)), ("lyrics", lyrics.get(who))) if v is not None}
+        parts["total"] = round(sum(parts.values()) / len(parts))
+        details[who] = parts
+    cur.score_details = details or None
+    cur.scores = {who: d["total"] for who, d in details.items()} or None
+    changed()
+    return {"score_details": details}
+
+
 @app.post("/api/player/ended")
 async def player_ended(request: Request, body: EndedBody | None = None) -> dict[str, Any]:
     require_host(request)
-    session.skip(body.scores if body else None)
+    cur = session.current()
+    if cur is not None and cur.scores is None and body and body.scores:
+        await player_finish(request, body)
+    session.skip()
     changed()
     return session.player.model_dump()
 
@@ -436,6 +489,27 @@ def media(yt_id: str, name: str) -> FileResponse:
     if not path.exists():
         raise HTTPException(404, "Arquivo ainda não está pronto")
     return FileResponse(path, media_type=media_type(name))
+
+
+@app.websocket("/ws/mic/{mic}")
+async def websocket_mic(ws: WebSocket, mic: int) -> None:
+    """Áudio de um microfone vindo do palco: quadros binários [float64 tempo do vídeo][int16 16 kHz...]."""
+    await ws.accept()
+    if mic not in (1, 2):
+        await ws.close()
+        return
+    try:
+        while True:
+            data = await ws.receive_bytes()
+            if len(data) < 10:
+                continue
+            (t,) = struct.unpack_from("<d", data, 0)
+            samples = np.frombuffer(data, dtype="<i2", offset=8)
+            scorer = _scorer_for_current()
+            if scorer is not None:
+                scorer.feed(mic, float(t), samples)
+    except WebSocketDisconnect:
+        pass
 
 
 @app.websocket("/ws")

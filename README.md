@@ -52,10 +52,21 @@ anfitrião ajusta tudo, inclusive o reverb.
 - **Tom**: no celular, aba Fila, engrenagem da música, botões − e + (até 6 semitons). O servidor gera
   uma versão com o tom alterado sem mudar o andamento (Rubber Band, ~3 s por música) e o palco troca
   o arquivo sem perder a posição.
-- **Pontuação**: a melodia de referência é extraída dos vocais separados (`melody.json`). Durante a
-  música o palco mostra a faixa de notas no topo e o pitch de cada microfone; no fim aparece o
-  resultado por cantor e ele fica no histórico ("Últimos resultados" no celular). Precisa dos
-  microfones ligados no palco e de uma música com voz separada (versões "já karaokê" não pontuam).
+- **Pontuação de afinação**: a melodia de referência é extraída dos vocais separados
+  (`melody.json`). Durante a música o palco mostra a faixa de notas no topo e o pitch de cada
+  microfone. Precisa dos microfones ligados no palco e de uma música com voz separada (versões
+  "já karaokê" não pontuam).
+- **Pontuação de letra**: o palco envia o áudio de cada microfone ao servidor, que reconhece a fala
+  com o Whisper (faster-whisper, modelo `base`, só CPU) e compara cada linha com o que foi cantado.
+  Os pontos da linha aparecem na tela ("+80 letra"), e o resultado final junta afinação e letra por
+  cantor; tudo fica no histórico ("Últimos resultados" no celular). Desligue com `KARAOKE_ASR=0`;
+  `KARAOKE_ASR_MODEL=small` reconhece melhor e gasta mais CPU.
+- **Letra alinhada ao vídeo**: as marcações do lrclib vêm de outra gravação da música e costumam
+  estar alguns segundos fora. Em segundo plano o servidor transcreve os vocais separados (modelo
+  `small`) e reposiciona cada linha no canto real, o que melhora a letra na tela e a pontuação.
+- **Quem ganha os pontos**: com um canal só (receptor com saída única), cada linha vai para o
+  cantor dono dela no dueto, ou para o cantor da música; com um canal por pessoa (interface USB de
+  duas entradas), cada microfone pontua para quem o declarou na aba Você.
 - **Dueto**: na engrenagem da música, escolha o parceiro. A letra alterna as estrofes entre os dois,
   cada um na sua cor, e "Trocar quem começa" inverte as partes.
 

@@ -14,7 +14,7 @@ import {
   statusText,
 } from '../lib/format'
 import { useSession } from '../lib/useSession'
-import type { LyricLine, QueueEntry, Singer, Song, State } from '../lib/types'
+import type { LyricEvent, LyricLine, QueueEntry, Singer, Song, State } from '../lib/types'
 import { MicPanel, MicStatus, loadMicConfig } from './MicPanel'
 import { PitchLane } from './PitchLane'
 import { useScoring } from './scoring'
@@ -22,7 +22,7 @@ import { useScoring } from './scoring'
 const RESULTS_SECONDS = 8
 
 export function StagePage() {
-  const { state, connected } = useSession()
+  const { state, connected, lyric } = useSession()
   const [started, setStarted] = useState(false)
   const [engine, setEngine] = useState<MicEngine | null>(null)
   const [showMics, setShowMics] = useState(false)
@@ -119,6 +119,7 @@ export function StagePage() {
             onScores={setLiveScores}
             onProgress={setProgress}
             onGuide={setGuideInfo}
+            lyric={lyric}
           />
         ) : current ? (
           <Preparing entry={current} song={song} state={state} />
@@ -131,6 +132,7 @@ export function StagePage() {
         <Transport state={state} progress={progress} guide={guideInfo} />
         <QueueList state={state} />
         <MicStatus engine={engine} audio={state.audio} scores={current ? liveScores : null} />
+        {current && <ScoreStatus entry={current} state={state} lyric={lyric} />}
       </aside>
       {showMics && engine && <MicPanel engine={engine} audio={state.audio} onClose={() => setShowMics(false)} />}
       {!connected && <div className="toast">Reconectando ao servidor…</div>}
@@ -246,6 +248,7 @@ function Player({
   onScores,
   onProgress,
   onGuide,
+  lyric,
 }: {
   entry: QueueEntry
   song: Song
@@ -254,12 +257,25 @@ function Player({
   onScores: (s: [number, number] | null) => void
   onProgress: (p: { time: number; duration: number }) => void
   onGuide: (g: GuideInfo) => void
+  lyric: LyricEvent | null
 }) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const guideRef = useRef<HTMLAudioElement>(null)
   const [time, setTime] = useState(0)
   const [blocked, setBlocked] = useState(false)
-  const [results, setResults] = useState<{ mic: 0 | 1; points: number }[] | null>(null)
+  const [results, setResults] = useState<ResultRow[] | null>(null)
+
+  // o motor carimba o áudio dos microfones com o tempo do vídeo (pontuação de letra no servidor)
+  useEffect(() => {
+    if (!engine) return
+    engine.timeSource = () => {
+      const v = videoRef.current
+      return v && !v.paused && !v.ended ? v.currentTime : null
+    }
+    return () => {
+      engine.timeSource = null
+    }
+  }, [engine])
   const lastReport = useRef(0)
   const lastTime = useRef(0) // o src novo zera o currentTime antes do efeito rodar; guardamos a posição aqui
   const entryIdRef = useRef(entry.id)
@@ -387,15 +403,22 @@ function Player({
     if (endedRef.current) return
     endedRef.current = true
     guideRef.current?.pause()
-    const mics = scoring.activeMics
-    if (scoring.scoring && mics.length > 0) {
-      const res = mics.map((mic) => ({ mic, points: scoring.scores[mic] }))
-      setResults(res)
-      const body = { scores: Object.fromEntries(res.map((r) => [r.mic + 1, r.points])) }
-      window.setTimeout(() => void api('/api/player/ended', { body }), RESULTS_SECONDS * 1000)
-    } else {
-      void api('/api/player/ended', { method: 'POST' })
-    }
+    const mics = scoring.scoring ? scoring.activeMics : []
+    const pitch = Object.fromEntries(mics.map((mic) => [mic + 1, scoring.scores[mic]]))
+    // o servidor junta afinação (daqui) com letra (dele) por cantor
+    api<{ score_details: Record<string, { pitch?: number; lyrics?: number; total: number }> }>('/api/player/finish', {
+      body: { scores: pitch },
+    })
+      .then((res) => {
+        const rows = Object.entries(res.score_details ?? {}).map(([who, d]) => ({ who, ...d }))
+        if (rows.length === 0) {
+          void api('/api/player/ended', { method: 'POST' })
+          return
+        }
+        setResults(rows)
+        window.setTimeout(() => void api('/api/player/ended', { method: 'POST' }), RESULTS_SECONDS * 1000)
+      })
+      .catch(() => void api('/api/player/ended', { method: 'POST' }))
   }, [scoring])
 
   const onTimeUpdate = () => {
@@ -437,6 +460,7 @@ function Player({
         <PitchLane melody={scoring.melody} trail={scoring.trail} videoRef={videoRef} colors={colors} />
       )}
       {song.lyrics && <Lyrics lines={song.lyrics} time={time} entry={entry} singers={singers} />}
+      <LyricPop entry={entry} state={state} lyric={lyric} />
       {media.pending && <div className="toast">Preparando {keyLabel(entry.key_shift)}…</div>}
       {paused && (
         <div className="stage-overlay paused">
@@ -456,43 +480,87 @@ function Player({
           </div>
         </div>
       )}
-      {results && <Results results={results} entry={entry} state={state} />}
+      {results && <Results results={results} state={state} />}
     </>
   )
 }
 
-function Results({
-  results,
-  entry,
-  state,
-}: {
-  results: { mic: 0 | 1; points: number }[]
-  entry: QueueEntry
-  state: State
-}) {
-  const nameOf = (mic: 0 | 1) => {
-    const singer =
-      entry.singer_ids.map((id) => state.singers.find((s) => s.id === id)).find((s) => s?.mic === mic + 1) ??
-      state.singers.find((s) => s.mic === mic + 1)
-    return singer ? { name: singer.name, color: singer.color } : { name: `Mic ${mic + 1}`, color: '#fff' }
-  }
-  const sorted = [...results].sort((a, b) => b.points - a.points)
+interface ResultRow {
+  who: string
+  pitch?: number
+  lyrics?: number
+  total: number
+}
+
+function whoLabel(who: string, state: State): { name: string; color: string } {
+  const singer = state.singers.find((s) => s.id === who)
+  if (singer) return { name: singer.name, color: singer.color }
+  return { name: who.replace('mic', 'Mic '), color: '#fff' }
+}
+
+function Results({ results, state }: { results: ResultRow[]; state: State }) {
+  const sorted = [...results].sort((a, b) => b.total - a.total)
   return (
     <div className="stage-overlay results">
       <div className="inner">
         <h1>Resultado</h1>
         {sorted.map((r, i) => {
-          const who = nameOf(r.mic)
+          const who = whoLabel(r.who, state)
           return (
-            <div key={r.mic} className="result-row" style={{ color: who.color }}>
+            <div key={r.who} className="result-row" style={{ color: who.color }}>
               <span className="pos">{i + 1}º</span>
-              <span className="name">{who.name}</span>
-              <span className="pts">{fmtPoints(r.points)}</span>
+              <span className="name">
+                {who.name}
+                <span className="parts">
+                  {r.pitch !== undefined ? `afinação ${fmtPoints(r.pitch)}` : ''}
+                  {r.pitch !== undefined && r.lyrics !== undefined ? ' · ' : ''}
+                  {r.lyrics !== undefined ? `letra ${fmtPoints(r.lyrics)}` : ''}
+                </span>
+              </span>
+              <span className="pts">{fmtPoints(r.total)}</span>
             </div>
           )
         })}
-        <p className="muted">{verdict(sorted[0]?.points ?? 0)}</p>
+        <p className="muted">{verdict(sorted[0]?.total ?? 0)}</p>
       </div>
+    </div>
+  )
+}
+
+/** "+80 letra" ao lado da letra quando o servidor avalia uma linha. */
+function LyricPop({ entry, state, lyric }: { entry: QueueEntry; state: State; lyric: LyricEvent | null }) {
+  const [shown, setShown] = useState<LyricEvent | null>(null)
+  useEffect(() => {
+    if (!lyric || lyric.entry_id !== entry.id) return
+    setShown(lyric)
+    const id = window.setTimeout(() => setShown((cur) => (cur?.seq === lyric.seq ? null : cur)), 1800)
+    return () => window.clearTimeout(id)
+  }, [lyric, entry.id])
+  if (!shown) return null
+  const who = whoLabel(shown.singer_id, state)
+  const pts = Math.round(shown.score * 100)
+  return (
+    <div className="lyric-pop" style={{ color: who.color }}>
+      {pts > 0 ? `+${pts}` : '0'} letra · {who.name}
+    </div>
+  )
+}
+
+/** Painel lateral: afinação e letra por cantor durante a música. */
+function ScoreStatus({ entry, state, lyric }: { entry: QueueEntry; state: State; lyric: LyricEvent | null }) {
+  const totals = lyric && lyric.entry_id === entry.id ? lyric.totals : {}
+  const singers = singersOf(entry, state)
+  if (singers.length === 0 || Object.keys(totals).length === 0) return null
+  return (
+    <div>
+      <h2>Letra</h2>
+      {singers.map((s) => (
+        <div key={s.id} className="mic-row">
+          <span style={{ color: s.color }}>{s.name}</span>
+          <div />
+          <span className="muted">{totals[s.id] !== undefined ? fmtPoints(totals[s.id]) : '–'}</span>
+        </div>
+      ))}
     </div>
   )
 }

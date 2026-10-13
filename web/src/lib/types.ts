@@ -34,6 +34,7 @@ export interface Song {
   lyrics: LyricLine[] | null
   lyrics_source: string | null
   has_melody: boolean
+  lyrics_aligned: boolean | null
   variants: string[]
   rendering: string | null
 }
@@ -54,6 +55,7 @@ export interface QueueEntry {
   key_shift: number
   duet_swap: boolean
   scores: Record<string, number> | null
+  score_details: Record<string, { pitch?: number; lyrics?: number; total: number }> | null
   added_at: number
 }
 
@@ -101,4 +103,16 @@ export interface State {
   songs: Record<string, Song>
   separation_enabled: boolean
   audio: AudioSettings
+}
+
+/** Evento de pontuação de letra enviado pelo servidor a cada linha avaliada. */
+export interface LyricEvent {
+  entry_id: string
+  line: number
+  mic: number
+  singer_id: string
+  score: number // 0..1
+  heard: string
+  totals: Record<string, number>
+  seq: number
 }

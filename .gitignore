@@ -12,3 +12,5 @@ data/
 .idea/
 .vscode/
 .ruff_cache/
+# lista pessoal de músicas
+musics.md

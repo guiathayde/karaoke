@@ -779,3 +779,40 @@ select {
       'me me';
   }
 }
+
+/* ---------- pontuação de letra ---------- */
+.lyric-pop {
+  position: absolute;
+  right: 40px;
+  bottom: 190px;
+  font-size: 30px;
+  font-weight: 700;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.9);
+  animation: pop 1.8s ease-out forwards;
+  pointer-events: none;
+}
+
+@keyframes pop {
+  0% {
+    opacity: 0;
+    transform: translateY(12px) scale(0.9);
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(0) scale(1.05);
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-16px);
+  }
+}
+
+.result-row .parts {
+  display: block;
+  font-size: 16px;
+  font-weight: 400;
+  color: var(--fg-2);
+}

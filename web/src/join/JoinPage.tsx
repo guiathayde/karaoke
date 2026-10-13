@@ -359,12 +359,22 @@ function Queue({ state, me, onMsg }: { state: State; me: Singer; onMsg: (msg: st
             <div className="muted">{state.songs[e.yt_id]?.video.title ?? e.yt_id}</div>
             {Object.entries(e.scores ?? {})
               .sort((a, b) => b[1] - a[1])
-              .map(([who, pts]) => (
-                <div key={who}>
-                  <span>{state.singers.find((s) => s.id === who)?.name ?? who.replace('mic', 'Mic ')}</span>
-                  <strong>{fmtPoints(pts)}</strong>
-                </div>
-              ))}
+              .map(([who, pts]) => {
+                const d = e.score_details?.[who]
+                const parts = [
+                  d?.pitch !== undefined ? `afinação ${fmtPoints(d.pitch)}` : null,
+                  d?.lyrics !== undefined ? `letra ${fmtPoints(d.lyrics)}` : null,
+                ].filter(Boolean)
+                return (
+                  <div key={who}>
+                    <span>
+                      {state.singers.find((s) => s.id === who)?.name ?? who.replace('mic', 'Mic ')}
+                      {parts.length > 0 && <span className="muted"> · {parts.join(' · ')}</span>}
+                    </span>
+                    <strong>{fmtPoints(pts)}</strong>
+                  </div>
+                )
+              })}
           </div>
         ))}
       </section>
