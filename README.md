@@ -107,6 +107,8 @@ Com o servidor parado, também vale `uv run python -m karaoke.importer pacote.zi
 - **No notebook:** `MyDrive/karaoke/catalogo.json` registra cada vídeo processado e em qual pacote ele
   está. Na primeira execução ele é montado a partir dos pacotes que já estão no Drive. A célula 3 pula o
   que já está no catálogo (`SKIP_DONE`), e a célula 5 lista o catálogo e remove entradas para reprocessar.
+  A célula 6 roda sozinha: analisa os `.zip` do Drive (conteúdo, repetidos, problemas) e completa o
+  catálogo com o que estiver faltando.
 - **No app:** cada pacote leva uma cópia do catálogo. Ao importar, o cartão **Biblioteca** (aba Buscar)
   passa a mostrar o que está **no Mac** (pronto para tocar, com botão de adicionar à fila), o que está
   **só no Drive** (com o nome do pacote a importar) e os **pedidos**. A busca marca os vídeos que já
