@@ -3,6 +3,9 @@
  * - Detecção de pitch: YIN sobre o sinal decimado para sr/2 (janela 512, 70–1000 Hz), a cada 256 amostras.
  * - Correção: a nota detectada é levada para a nota mais próxima da escala escolhida; a força (0..1)
  *   decide quanto do desvio é corrigido e a velocidade (s) suaviza a transição.
+ * - Modo guiado (`follow`): com a melodia do vocal original e o relógio do vídeo, o alvo passa a ser a nota
+ *   que o cantor original canta naquele instante (na oitava de quem canta). Se a pessoa estiver a mais de
+ *   3 semitons dela, ou fora dos trechos com voz, volta para a escala.
  * - Pitch shift: linha de atraso com duas leituras cruzadas (grão sincronizado com o período),
  *   latência média de meio grão (~5–10 ms).
  */
@@ -83,6 +86,10 @@ class AutotuneProcessor extends AudioWorkletProcessor {
     this.speed = 0.02
     this.mask = new Array(12).fill(true)
     this.gate = 0.01
+    this.follow = false
+    this.melody = null // { hop, notes: Float32Array } no tom que está tocando
+    this.clock = null // [tempo do vídeo, currentTime do contexto] da última sincronização
+    this.guided = false
 
     // estado
     this.targetShift = 0
@@ -106,6 +113,9 @@ class AutotuneProcessor extends AudioWorkletProcessor {
       }
       if (Array.isArray(m.mask) && m.mask.length === 12) this.mask = m.mask.map(Boolean)
       if (typeof m.gate === 'number') this.gate = m.gate
+      if (typeof m.follow === 'boolean') this.follow = m.follow
+      if ('melody' in m) this.melody = m.melody && m.melody.notes.length ? m.melody : null
+      if ('clock' in m) this.clock = m.clock
     }
   }
 
@@ -122,6 +132,15 @@ class AutotuneProcessor extends AudioWorkletProcessor {
       if (this.mask[((r - k) % 12 + 12) % 12]) return r - k
     }
     return r
+  }
+
+  /** Nota do vocal original agora (0 se não houver voz, melodia ou relógio recente). */
+  melodyNow() {
+    if (!this.melody || !this.clock) return 0
+    const age = currentTime - this.clock[1]
+    if (age < 0 || age > 1) return 0
+    const frame = Math.floor((this.clock[0] + age) / this.melody.hop)
+    return this.melody.notes[frame] || 0
   }
 
   detect() {
@@ -142,6 +161,7 @@ class AutotuneProcessor extends AudioWorkletProcessor {
       this.conf = 0
       this.freq = 0
       this.targetShift = 0
+      this.guided = false
       return
     }
     const { freq, confidence } = this.yin.detect(this.detBuf)
@@ -149,13 +169,25 @@ class AutotuneProcessor extends AudioWorkletProcessor {
     if (confidence < 0.6 || freq <= 0) {
       this.freq = 0
       this.targetShift = 0
+      this.guided = false
       return
     }
     this.freq = freq
     this.period = this.sr / freq
     this.grain = Math.max(384, Math.min(1024, Math.round(2 * this.period)))
     const midi = 69 + 12 * Math.log2(freq / 440)
-    const target = this.nearestAllowed(midi)
+    let target = this.nearestAllowed(midi)
+    this.guided = false
+    if (this.follow) {
+      const ref = this.melodyNow()
+      if (ref > 0) {
+        const folded = ref + 12 * Math.round((midi - ref) / 12)
+        if (Math.abs(folded - midi) <= 3) {
+          target = folded
+          this.guided = true
+        }
+      }
+    }
     let diff = target - midi
     if (diff > 2.5) diff = 2.5
     if (diff < -2.5) diff = -2.5
@@ -208,7 +240,7 @@ class AutotuneProcessor extends AudioWorkletProcessor {
     this.sinceReport += n
     if (this.sinceReport >= 2400) {
       this.sinceReport = 0
-      this.port.postMessage({ freq: this.freq, conf: this.conf, shift: this.curShift, rms: this.rms })
+      this.port.postMessage({ freq: this.freq, conf: this.conf, shift: this.curShift, rms: this.rms, guided: this.guided })
     }
     return true
   }

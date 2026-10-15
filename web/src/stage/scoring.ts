@@ -1,5 +1,5 @@
 /* Pontuação estilo SingStar: compara o pitch cantado (detectado pelo autotune) com a melodia de referência. */
-import { useEffect, useRef, useState, type RefObject } from 'react'
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import type { MicEngine } from '../audio/engine'
 
 export interface Melody {
@@ -29,8 +29,17 @@ export function useScoring(
   hasMelody: boolean,
   videoRef: RefObject<HTMLVideoElement | null>,
   resetKey = 0,
+  keyShift = 0,
 ) {
-  const [melody, setMelody] = useState<Melody | null>(null)
+  const [baseMelody, setMelody] = useState<Melody | null>(null)
+  // melody.json é do tom original; com a variante de tom tocando, a referência sobe/desce junto
+  const melody = useMemo<Melody | null>(
+    () =>
+      baseMelody && keyShift
+        ? { hop: baseMelody.hop, notes: baseMelody.notes.map((n) => (n > 0 ? n + keyShift : 0)) }
+        : baseMelody,
+    [baseMelody, keyShift],
+  )
   const [scores, setScores] = useState<[number, number]>([0, 0])
   const hits = useRef<[number, number]>([0, 0])
   const lastFrame = useRef<[number, number]>([-1, -1])

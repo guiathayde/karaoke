@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 SongStatus = Literal["pending", "downloading", "separating", "muxing", "melody", "lyrics", "ready", "error"]
 PlayerStatus = Literal["idle", "waiting", "playing", "paused", "stopped"]
 Scale = Literal["chromatic", "major", "minor"]
+KeyScale = Literal["major", "minor"]
 
 
 class Video(BaseModel):
@@ -41,6 +42,8 @@ class Song(BaseModel):
     lyrics_aligned: bool | None = None  # None = não tentou alinhar a letra ao canto
     variants: list[str] = Field(default_factory=list)  # ex.: instrumental_k+2.mp4
     rendering: str | None = None  # variante de tom em preparo
+    key_tonic: int | None = None  # tonalidade estimada pela melodia (0 = C ... 11 = B), no tom original
+    key_scale: KeyScale | None = None
 
 
 class Singer(BaseModel):
@@ -77,6 +80,11 @@ class MicSettings(BaseModel):
     key: int | None = Field(None, ge=0, le=11)  # 0 = C ... 11 = B; None = cromático
     scale: Scale = "chromatic"
     gain: float = Field(1.0, ge=0, le=2)
+    auto_key: bool = True  # usa a tonalidade detectada da música (key/scale ficam como reserva)
+    follow_melody: bool = False  # corrige para a nota do vocal original em vez da nota mais próxima da escala
+    double: int = Field(0, ge=0, le=100)  # dobra de voz
+    echo: int = Field(0, ge=0, le=100)
+    drive: int = Field(0, ge=0, le=100)  # saturação
 
 
 class ReverbSettings(BaseModel):
@@ -149,6 +157,11 @@ class MicUpdateBody(BaseModel):
     chromatic: bool | None = None  # True zera a tonalidade (escala cromática)
     scale: Scale | None = None
     gain: float | None = Field(None, ge=0, le=2)
+    auto_key: bool | None = None
+    follow_melody: bool | None = None
+    double: int | None = Field(None, ge=0, le=100)
+    echo: int | None = Field(None, ge=0, le=100)
+    drive: int | None = Field(None, ge=0, le=100)
 
 
 class ReverbUpdateBody(BaseModel):

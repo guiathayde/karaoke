@@ -6,9 +6,52 @@ import json
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 SR = 22050
 HOP = 512
+
+# perfis de Krumhansl-Kessler (peso de cada grau a partir da tônica)
+_MAJOR = (6.35, 2.23, 3.48, 2.33, 4.38, 4.09, 2.52, 5.19, 2.39, 3.66, 2.29, 2.88)
+_MINOR = (6.33, 2.68, 3.52, 5.38, 2.60, 3.53, 2.54, 4.75, 3.98, 2.69, 3.34, 3.17)
+MIN_VOICED = 200  # ~5 s de canto
+
+
+def _corr(a: list[float], b: tuple[float, ...]) -> float:
+    ma, mb = sum(a) / len(a), sum(b) / len(b)
+    num = sum((x - ma) * (y - mb) for x, y in zip(a, b, strict=True))
+    den = (sum((x - ma) ** 2 for x in a) * sum((y - mb) ** 2 for y in b)) ** 0.5
+    return num / den if den else 0.0
+
+
+def detect_key(notes: list[float]) -> tuple[int, Literal["major", "minor"]] | None:
+    """Tonalidade pelo histograma de classes de altura da melodia (cada frame com voz conta igual).
+
+    Relativas (C maior / A menor) usam as mesmas notas, então uma confusão entre elas não muda o autotune.
+    """
+    hist = [0.0] * 12
+    voiced = 0
+    for n in notes:
+        if n > 0:
+            hist[round(n) % 12] += 1
+            voiced += 1
+    if voiced < MIN_VOICED:
+        return None
+    best: tuple[float, int, Literal["major", "minor"]] = (-2.0, 0, "major")
+    for tonic in range(12):
+        rotated = hist[tonic:] + hist[:tonic]
+        for scale, profile in (("major", _MAJOR), ("minor", _MINOR)):
+            r = _corr(rotated, profile)
+            if r > best[0]:
+                best = (r, tonic, scale)
+    return best[1], best[2]
+
+
+def key_from_file(melody_json: Path) -> tuple[int, Literal["major", "minor"]] | None:
+    try:
+        return detect_key(json.loads(melody_json.read_text())["notes"])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def extract(vocals_path: Path, out_json: Path) -> int:

@@ -10,7 +10,9 @@ import {
   lineSinger,
   lyricBlocks,
   mediaFile,
+  playingShift,
   singersOf,
+  songKey,
   statusText,
 } from '../lib/format'
 import { useSession } from '../lib/useSession'
@@ -31,13 +33,19 @@ export function StagePage() {
   const [guideInfo, setGuideInfo] = useState<GuideInfo>({ available: false, ducked: false })
   const status = state?.player.status
   const audio = state?.audio
+  const playing = state?.queue.find((e) => e.id === state.player.entry_id)
+  const playingSong = playing ? state?.songs[playing.yt_id] : undefined
+  const key = state && playing && playingSong ? songKey(playing, playingSong, state) : null
+  const keyTonic = key?.tonic ?? null
+  const keyScale = key?.scale ?? null
 
   useEffect(() => {
     if (!engine || !audio) return
-    engine.applyMic(0, audio.mics[0])
-    engine.applyMic(1, audio.mics[1])
+    const k = keyTonic !== null && keyScale ? { tonic: keyTonic, scale: keyScale } : null
+    engine.applyMic(0, audio.mics[0], k)
+    engine.applyMic(1, audio.mics[1], k)
     engine.applyReverb(audio.reverb)
-  }, [engine, audio])
+  }, [engine, audio, keyTonic, keyScale])
 
   const startStage = () => {
     setStarted(true)
@@ -134,7 +142,9 @@ export function StagePage() {
         <MicStatus engine={engine} audio={state.audio} scores={current ? liveScores : null} />
         {current && <ScoreStatus entry={current} state={state} lyric={lyric} />}
       </aside>
-      {showMics && engine && <MicPanel engine={engine} audio={state.audio} onClose={() => setShowMics(false)} />}
+      {showMics && engine && (
+        <MicPanel engine={engine} audio={state.audio} songKey={key} onClose={() => setShowMics(false)} />
+      )}
       {!connected && <div className="toast">Reconectando ao servidor…</div>}
     </main>
   )
@@ -285,7 +295,15 @@ function Player({
   const paused = state.player.status === 'paused'
   const singers = singersOf(entry, state)
   const restartId = state.player.restart_id
-  const scoring = useScoring(engine, entry.id, entry.yt_id, song.has_melody, videoRef, restartId)
+  const shift = playingShift(entry, song, state)
+  const scoring = useScoring(engine, entry.id, entry.yt_id, song.has_melody, videoRef, restartId, shift)
+
+  // autotune guiado: a melodia vai para o worklet no tom que está tocando
+  useEffect(() => {
+    if (!engine) return
+    engine.setMelody(scoring.melody)
+    return () => engine.setMelody(null)
+  }, [engine, scoring.melody])
   const guideName = guideFile(entry, song)
   const guideSrc = guideName ? `/media/${entry.yt_id}/${guideName}` : null
   const guideCfg = state.audio.guide

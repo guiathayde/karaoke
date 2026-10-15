@@ -8,6 +8,7 @@ import sqlite3
 import time
 from pathlib import Path
 
+from .melody import key_from_file
 from .models import Song
 
 ORIGINAL = "original.mp4"
@@ -83,6 +84,10 @@ class Storage:
         song.has_instrumental = self.path(yt_id, INSTRUMENTAL).exists()
         song.has_vocals = self.path(yt_id, VOCALS).exists()
         song.has_melody = self.path(yt_id, MELODY).exists()
+        if song.has_melody and song.key_tonic is None:
+            found = key_from_file(self.path(yt_id, MELODY))
+            if found:
+                song.key_tonic, song.key_scale = found
         d = self.song_dir(yt_id)
         song.variants = sorted(p.name for p in d.iterdir() if _VARIANT.match(p.name)) if d.exists() else []
         now = time.time()

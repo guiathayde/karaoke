@@ -1,9 +1,19 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { KEY_NAMES } from '../audio/engine'
+import { PRESETS, presetOf } from '../audio/presets'
 import { api, ApiError, getSingerId, saveIdentity } from '../lib/api'
-import { entryReady, fmtDuration, fmtPoints, keyLabel, singersOf, statusText } from '../lib/format'
+import { entryReady, fmtDuration, fmtPoints, keyLabel, keyText, singersOf, songKey, statusText } from '../lib/format'
 import { useSession } from '../lib/useSession'
-import type { GuideSettings, MicSettings, QueueEntry, ReverbSettings, Singer, State, Video } from '../lib/types'
+import type {
+  GuideSettings,
+  MicSettings,
+  QueueEntry,
+  ReverbSettings,
+  Singer,
+  SongKey,
+  State,
+  Video,
+} from '../lib/types'
 
 type Tab = 'buscar' | 'fila' | 'eu'
 
@@ -461,6 +471,13 @@ function Me({ state, me, onMsg }: { state: State; me: Singer; onMsg: (msg: strin
       onMsg(err instanceof Error ? err.message : 'Falha')
     }
   }
+  const current = state.queue.find((e) => e.id === state.player.entry_id)
+  const currentSong = current ? state.songs[current.yt_id] : undefined
+  const key = current && currentSong ? songKey(current, currentSong, state) : null
+  const hasMelody = Boolean(currentSong?.has_melody && !current?.is_karaoke_version)
+  const card = (n: number) => (
+    <AutotuneCard key={n} n={n} settings={state.audio.mics[n - 1]} songKey={key} hasMelody={hasMelody} onMsg={onMsg} />
+  )
   return (
     <>
       <section className="card">
@@ -480,13 +497,8 @@ function Me({ state, me, onMsg }: { state: State; me: Singer; onMsg: (msg: strin
           </button>
         </div>
       </section>
-      {me.mic && (
-        <AutotuneCard n={me.mic} settings={state.audio.mics[me.mic - 1]} onMsg={onMsg} />
-      )}
-      {me.is_host &&
-        [1, 2]
-          .filter((n) => n !== me.mic)
-          .map((n) => <AutotuneCard key={n} n={n} settings={state.audio.mics[n - 1]} onMsg={onMsg} />)}
+      {me.mic && card(me.mic)}
+      {me.is_host && [1, 2].filter((n) => n !== me.mic).map(card)}
       {canControl(state, me) && <GuideCard settings={state.audio.guide} onMsg={onMsg} />}
       {me.is_host && <ReverbCard settings={state.audio.reverb} onMsg={onMsg} />}
       {me.is_host && <ImportCard onMsg={onMsg} />}
@@ -536,53 +548,145 @@ function useDebouncedSend(send: (body: Record<string, unknown>) => void) {
   }
 }
 
-function AutotuneCard({ n, settings, onMsg }: { n: number; settings: MicSettings; onMsg: (msg: string) => void }) {
-  const [strength, setStrength] = useState(settings.strength)
-  useEffect(() => setStrength(settings.strength), [settings.strength])
-  const send = (body: Record<string, unknown>) =>
-    api(`/api/audio/mic/${n}`, { body }).catch((err) => onMsg(err instanceof Error ? err.message : 'Falha'))
-  const sendLater = useDebouncedSend(send)
-  const scale = settings.scale === 'chromatic' ? 'major' : settings.scale
+function SliderField({
+  label,
+  value,
+  min = 0,
+  max = 100,
+  unit = '%',
+  disabled,
+  onChange,
+}: {
+  label: string
+  value: number
+  min?: number
+  max?: number
+  unit?: string
+  disabled?: boolean
+  onChange: (v: number) => void
+}) {
+  const [v, setV] = useState(value)
+  useEffect(() => setV(value), [value])
+  const later = useDebouncedSend((body) => onChange(body.v as number))
   return (
-    <section className="card">
-      <h2>Autotune do mic {n}</h2>
-      <label className="row">
-        <span className="grow">Ligado</span>
-        <input type="checkbox" checked={settings.enabled} onChange={(e) => send({ enabled: e.target.checked })} />
+    <>
+      <label className="muted">
+        {label}: {v}
+        {unit}
       </label>
-      <label className="muted">Força: {strength}%</label>
       <input
         className="slider"
         type="range"
-        min={0}
-        max={100}
-        value={strength}
+        min={min}
+        max={max}
+        value={v}
+        disabled={disabled}
         onChange={(e) => {
-          const v = Number(e.target.value)
-          setStrength(v)
-          sendLater({ strength: v })
+          const n = Number(e.target.value)
+          setV(n)
+          later({ v: n })
         }}
       />
-      <label className="muted">Tom da música</label>
+    </>
+  )
+}
+
+function AutotuneCard({
+  n,
+  settings,
+  songKey: detected,
+  hasMelody,
+  onMsg,
+}: {
+  n: number
+  settings: MicSettings
+  songKey: SongKey | null
+  hasMelody: boolean
+  onMsg: (msg: string) => void
+}) {
+  const send = (body: Record<string, unknown>) =>
+    api(`/api/audio/mic/${n}`, { body }).catch((err) => onMsg(err instanceof Error ? err.message : 'Falha'))
+  const scale = settings.scale === 'chromatic' ? 'major' : settings.scale
+  const preset = presetOf(settings)
+  const keyValue = settings.auto_key ? 'auto' : settings.key === null ? 'chromatic' : String(settings.key)
+  const onKey = (value: string) => {
+    if (value === 'auto') send({ auto_key: true })
+    else if (value === 'chromatic') send({ auto_key: false, chromatic: true })
+    else send({ auto_key: false, key: Number(value), scale })
+  }
+  return (
+    <section className="card">
+      <h2>Voz do mic {n}</h2>
+      <div className="row wrap">
+        {PRESETS.map((p) => (
+          <button key={p.id} className={preset?.id === p.id ? 'primary' : ''} onClick={() => send(p.values)}>
+            {p.label}
+          </button>
+        ))}
+      </div>
+      <p className="muted small">{preset ? preset.hint : 'Personalizado.'}</p>
+      <label className="row">
+        <span className="grow">Autotune ligado</span>
+        <input type="checkbox" checked={settings.enabled} onChange={(e) => send({ enabled: e.target.checked })} />
+      </label>
+      <SliderField
+        label="Quanto de ajuda"
+        value={settings.strength}
+        disabled={!settings.enabled}
+        onChange={(v) => send({ strength: v })}
+      />
+      <SliderField
+        label="Velocidade da correção (1 = robótico, 200 = natural)"
+        value={settings.speed_ms}
+        min={1}
+        max={200}
+        unit=" ms"
+        disabled={!settings.enabled}
+        onChange={(v) => send({ speed_ms: v })}
+      />
+      <label className="row">
+        <span className="grow">Seguir o vocal original</span>
+        <input
+          type="checkbox"
+          checked={settings.follow_melody}
+          disabled={!settings.enabled}
+          onChange={(e) => send({ follow_melody: e.target.checked })}
+        />
+      </label>
+      {settings.follow_melody && (
+        <p className="muted small">
+          {hasMelody
+            ? 'Corrige para a nota que o cantor original canta em cada momento (quando você está perto dela).'
+            : 'A música atual não tem melodia do vocal; vale a tonalidade abaixo.'}
+        </p>
+      )}
+      <label className="muted">Tonalidade</label>
       <div className="row">
-        <select
-          value={settings.key === null ? 'chromatic' : String(settings.key)}
-          onChange={(e) =>
-            e.target.value === 'chromatic' ? send({ chromatic: true }) : send({ key: Number(e.target.value), scale })
-          }
-        >
-          <option value="chromatic">Cromático (automático)</option>
+        <select value={keyValue} onChange={(e) => onKey(e.target.value)}>
+          <option value="auto">Automática{detected ? ` (${keyText(detected)})` : ''}</option>
+          <option value="chromatic">Cromática (todas as notas)</option>
           {KEY_NAMES.map((k, i) => (
             <option key={k} value={i}>
               {k}
             </option>
           ))}
         </select>
-        <select value={scale} disabled={settings.key === null} onChange={(e) => send({ scale: e.target.value })}>
+        <select
+          value={scale}
+          disabled={settings.auto_key || settings.key === null}
+          onChange={(e) => send({ scale: e.target.value })}
+        >
           <option value="major">maior</option>
           <option value="minor">menor</option>
         </select>
       </div>
+      {settings.auto_key && !detected && (
+        <p className="muted small">Sem tonalidade detectada para a música atual: corrige para qualquer nota (cromática).</p>
+      )}
+      <h3>Efeitos</h3>
+      <SliderField label="Dobra de voz" value={settings.double} onChange={(v) => send({ double: v })} />
+      <SliderField label="Eco" value={settings.echo} onChange={(v) => send({ echo: v })} />
+      <SliderField label="Saturação" value={settings.drive} onChange={(v) => send({ drive: v })} />
     </section>
   )
 }

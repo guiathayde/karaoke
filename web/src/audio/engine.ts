@@ -1,6 +1,6 @@
-/* Motor de áudio dos microfones (roda na tela do palco): captura, autotune por canal, reverb. */
+/* Motor de áudio dos microfones (roda na tela do palco): captura, autotune e efeitos por canal, eco e reverb. */
 
-import type { MicSettings, ReverbSettings, Scale } from '../lib/types'
+import type { MicSettings, ReverbSettings, Scale, SongKey } from '../lib/types'
 
 export type InputMode = 'mono' | 'stereo' | 'two'
 
@@ -15,6 +15,19 @@ export interface PitchInfo {
   conf: number
   shift: number
   rms: number
+  guided: boolean // a correção está seguindo a nota do vocal original
+}
+
+export interface MelodyTrack {
+  hop: number
+  notes: number[]
+}
+
+/** Tonalidade que o autotune de um mic usa: a detectada da música (automático) ou a escolhida à mão; null = cromática. */
+export function effectiveKey(s: MicSettings, songKey: SongKey | null): SongKey | null {
+  if (s.auto_key) return songKey
+  if (s.key === null || s.scale === 'chromatic') return null
+  return { tonic: s.key, scale: s.scale }
 }
 
 const SCALES: Record<Exclude<Scale, 'chromatic'>, number[]> = {
@@ -34,6 +47,13 @@ export function scaleMask(key: number | null, scale: Scale): boolean[] {
 interface Chain {
   hpf: BiquadFilterNode
   worklet: AudioWorkletNode
+  fx: AudioNode[] // saturação e dobra (desconectados juntos)
+  lfos: OscillatorNode[]
+  driveIn: GainNode
+  driveDry: GainNode
+  driveWet: GainNode
+  double: GainNode
+  echoSend: GainNode
   tap: AudioWorkletNode
   mute: GainNode
   ws: WebSocket | null
@@ -55,11 +75,20 @@ function makeImpulse(ctx: AudioContext, seconds = 1.8, decay = 0.45): AudioBuffe
   return buf
 }
 
+function driveCurve(): Float32Array<ArrayBuffer> {
+  const n = 2048
+  const curve = new Float32Array(n)
+  for (let i = 0; i < n; i++) curve[i] = Math.tanh((i / (n - 1)) * 2 - 1)
+  return curve
+}
+
 export class MicEngine {
   readonly ctx: AudioContext
   private bus: GainNode
   private reverbSend: GainNode
   private convolver: ConvolverNode
+  private echoIn: GainNode
+  private melody: { hop: number; notes: Float32Array } | null = null
   private chains: (Chain | null)[] = [null, null]
   private streams: MediaStream[] = []
   private sources: AudioNode[] = []
@@ -79,6 +108,23 @@ export class MicEngine {
     this.bus.connect(this.reverbSend)
     this.reverbSend.connect(this.convolver)
     this.convolver.connect(this.ctx.destination)
+    // eco compartilhado: cada mic manda uma parte do sinal; repetições escurecem a cada volta
+    this.echoIn = this.ctx.createGain()
+    const echoDelay = this.ctx.createDelay(1)
+    echoDelay.delayTime.value = 0.32
+    const echoTone = this.ctx.createBiquadFilter()
+    echoTone.type = 'lowpass'
+    echoTone.frequency.value = 3200
+    const echoFeedback = this.ctx.createGain()
+    echoFeedback.gain.value = 0.38
+    this.echoIn.connect(echoDelay)
+    echoDelay.connect(echoTone)
+    echoTone.connect(echoFeedback)
+    echoFeedback.connect(echoDelay)
+    echoTone.connect(this.ctx.destination)
+    echoTone.connect(this.reverbSend)
+    // o autotune guiado precisa saber em que ponto do vídeo estamos
+    window.setInterval(() => this.postClock(), 250)
     this.workletReady = Promise.all([
       this.ctx.audioWorklet.addModule('/worklets/autotune.js'),
       this.ctx.audioWorklet.addModule('/worklets/tap.js'),
@@ -167,6 +213,43 @@ export class MicEngine {
       channelCount: 1,
       channelCountMode: 'explicit',
     })
+    // saturação: mistura do sinal limpo com uma cópia amplificada e achatada por tanh
+    const driveIn = this.ctx.createGain()
+    const shaper = this.ctx.createWaveShaper()
+    shaper.curve = driveCurve()
+    shaper.oversample = '2x'
+    const driveWet = this.ctx.createGain()
+    driveWet.gain.value = 0
+    const driveDry = this.ctx.createGain()
+    const voice = this.ctx.createGain()
+    // dobra: duas cópias atrasadas 20–30 ms com o atraso oscilando (leve desafinação), abertas no estéreo
+    const double = this.ctx.createGain()
+    double.gain.value = 0
+    const fx: AudioNode[] = [driveIn, shaper, driveWet, driveDry, voice, double]
+    const lfos: OscillatorNode[] = []
+    for (const [base, rate, pan] of [
+      [0.022, 0.33, -0.7],
+      [0.031, 0.27, 0.7],
+    ]) {
+      const delay = this.ctx.createDelay(0.1)
+      delay.delayTime.value = base
+      const lfo = this.ctx.createOscillator()
+      lfo.frequency.value = rate
+      const depth = this.ctx.createGain()
+      depth.gain.value = 0.0015
+      lfo.connect(depth)
+      depth.connect(delay.delayTime)
+      lfo.start()
+      const panner = this.ctx.createStereoPanner()
+      panner.pan.value = pan
+      voice.connect(delay)
+      delay.connect(panner)
+      panner.connect(double)
+      fx.push(delay, depth, panner)
+      lfos.push(lfo)
+    }
+    const echoSend = this.ctx.createGain()
+    echoSend.gain.value = 0
     const gain = this.ctx.createGain()
     const analyser = this.ctx.createAnalyser()
     analyser.fftSize = 1024
@@ -182,12 +265,19 @@ export class MicEngine {
     const chain: Chain = {
       hpf,
       worklet,
+      fx,
+      lfos,
+      driveIn,
+      driveDry,
+      driveWet,
+      double,
+      echoSend,
       tap,
       mute,
       ws: null,
       gain,
       analyser,
-      pitch: { freq: 0, conf: 0, shift: 0, rms: 0 },
+      pitch: { freq: 0, conf: 0, shift: 0, rms: 0, guided: false },
     }
     worklet.port.onmessage = (e) => {
       chain.pitch = e.data as PitchInfo
@@ -207,23 +297,58 @@ export class MicEngine {
     hpf.connect(tap)
     tap.connect(mute)
     mute.connect(this.ctx.destination)
-    worklet.connect(gain)
+    worklet.connect(driveDry)
+    worklet.connect(driveIn)
+    driveIn.connect(shaper)
+    shaper.connect(driveWet)
+    driveDry.connect(voice)
+    driveWet.connect(voice)
+    voice.connect(gain)
+    double.connect(gain)
     gain.connect(analyser)
     gain.connect(this.bus)
+    gain.connect(echoSend)
+    echoSend.connect(this.echoIn)
+    worklet.port.postMessage({ melody: this.melody })
     this.connectMicSocket(chain, index)
     return chain
   }
 
-  applyMic(index: 0 | 1, s: MicSettings): void {
+  applyMic(index: 0 | 1, s: MicSettings, songKey: SongKey | null): void {
     const chain = this.chains[index]
     if (!chain) return
+    const key = effectiveKey(s, songKey)
     chain.worklet.port.postMessage({
       enabled: s.enabled,
       strength: s.strength / 100,
       speed: s.speed_ms / 1000,
-      mask: scaleMask(s.key, s.scale),
+      mask: key ? scaleMask(key.tonic, key.scale) : scaleMask(null, 'chromatic'),
+      follow: s.follow_melody,
     })
-    chain.gain.gain.setTargetAtTime(s.gain, this.ctx.currentTime, 0.05)
+    const now = this.ctx.currentTime
+    const drive = s.drive / 100
+    chain.driveIn.gain.setTargetAtTime(1 + drive * 12, now, 0.05)
+    chain.driveWet.gain.setTargetAtTime(drive * 0.45, now, 0.05)
+    chain.driveDry.gain.setTargetAtTime(1 - drive * 0.5, now, 0.05)
+    chain.double.gain.setTargetAtTime((s.double / 100) * 0.7, now, 0.05)
+    chain.echoSend.gain.setTargetAtTime((s.echo / 100) * 0.5, now, 0.05)
+    chain.gain.gain.setTargetAtTime(s.gain, now, 0.05)
+  }
+
+  /** Melodia do vocal original (já no tom que está tocando) para o autotune guiado; null desliga. */
+  setMelody(melody: MelodyTrack | null): void {
+    this.melody = melody ? { hop: melody.hop, notes: Float32Array.from(melody.notes) } : null
+    for (const c of this.chains) c?.worklet.port.postMessage({ melody: this.melody })
+    this.postClock()
+  }
+
+  private postClock(): void {
+    if (!this.chains.some(Boolean)) return
+    const t = this.timeSource?.() ?? null
+    // quem canta ouve a música atrasada pela latência de saída; a voz chega ao worklet nesse atraso
+    const lag = (this.ctx.baseLatency ?? 0) + (this.ctx.outputLatency ?? 0)
+    const clock = t === null ? null : [Math.max(0, t - lag), this.ctx.currentTime]
+    for (const c of this.chains) c?.worklet.port.postMessage({ clock })
   }
 
   applyReverb(r: ReverbSettings): void {
@@ -260,6 +385,9 @@ export class MicEngine {
       if (!c) continue
       c.hpf.disconnect()
       c.worklet.disconnect()
+      for (const n of c.fx) n.disconnect()
+      for (const o of c.lfos) o.stop()
+      c.echoSend.disconnect()
       c.tap.disconnect()
       c.mute.disconnect()
       c.gain.disconnect()

@@ -1,4 +1,5 @@
-import type { LyricLine, QueueEntry, Singer, Song, State } from './types'
+import { KEY_NAMES } from '../audio/engine'
+import type { LyricLine, QueueEntry, Singer, Song, SongKey, State } from './types'
 
 export function fmtDuration(seconds: number | null | undefined): string {
   if (!seconds && seconds !== 0) return ''
@@ -31,6 +32,23 @@ export function mediaFile(entry: QueueEntry, song: Song, state: State): { name: 
   if (entry.key_shift === 0) return { name: base, pending: false }
   const variant = variantName(base, entry.key_shift)
   return song.variants.includes(variant) ? { name: variant, pending: false } : { name: base, pending: true }
+}
+
+/** Semitons em relação ao original do que está tocando agora (0 enquanto a variante de tom é preparada). */
+export function playingShift(entry: QueueEntry, song: Song, state: State): number {
+  return mediaFile(entry, song, state).pending ? 0 : entry.key_shift
+}
+
+/** Tonalidade detectada da música, já transposta para o tom que está tocando. */
+export function songKey(entry: QueueEntry, song: Song, state: State): SongKey | null {
+  if (song.key_tonic === null || song.key_tonic === undefined || !song.key_scale) return null
+  const tonic = (((song.key_tonic + playingShift(entry, song, state)) % 12) + 12) % 12
+  return { tonic, scale: song.key_scale }
+}
+
+export function keyText(key: SongKey | null): string {
+  if (!key) return 'cromático'
+  return `${KEY_NAMES[key.tonic]} ${key.scale === 'minor' ? 'menor' : 'maior'}`
 }
 
 export function mediaUrl(entry: QueueEntry, song: Song, state: State): string {

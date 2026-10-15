@@ -47,6 +47,18 @@ O Mac não tem entrada P10: é preciso uma interface USB (ou um cabo P10 → USB
 computador. Cada cantor ajusta a força do próprio autotune e o tom da música pelo celular; o
 anfitrião ajusta tudo, inclusive o reverb.
 
+No celular, o cartão "Voz do mic" tem predefinições e ajustes finos:
+
+- **Natural**, **Como o cantor**, **Pop** e **Trap**. O Trap é o autotune robótico, com a correção
+  instantânea pulando de nota em nota, mais eco e saturação.
+- **Quanto de ajuda** (força) e **velocidade da correção**: 1 ms soa robótico, 200 ms soa natural.
+- **Seguir o vocal original**: corrige para a nota que o cantor original canta naquele instante (pela
+  melodia extraída dos vocais), não para a nota mais próxima da escala. Só puxa quando você está a até
+  3 semitons dela; fora disso, ou sem melodia, vale a escala.
+- **Tonalidade automática**: estimada pela melodia de cada música e transposta junto com o tom
+  escolhido. Sem detecção, a correção é cromática.
+- **Efeitos**: dobra de voz, eco e saturação, por microfone.
+
 ## Tom, pontuação e dueto
 
 - **Tom**: no celular, aba Fila, engrenagem da música, botões − e + (até 6 semitons). O servidor gera

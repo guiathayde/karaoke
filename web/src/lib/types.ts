@@ -37,6 +37,8 @@ export interface Song {
   lyrics_aligned: boolean | null
   variants: string[]
   rendering: string | null
+  key_tonic: number | null // tonalidade detectada, no tom original
+  key_scale: KeyScale | null
 }
 
 export interface Singer {
@@ -67,6 +69,13 @@ export interface Player {
 }
 
 export type Scale = 'chromatic' | 'major' | 'minor'
+export type KeyScale = 'major' | 'minor'
+
+/** Tonalidade da música no tom que está tocando. */
+export interface SongKey {
+  tonic: number
+  scale: KeyScale
+}
 
 export interface MicSettings {
   enabled: boolean
@@ -75,6 +84,11 @@ export interface MicSettings {
   key: number | null // 0 = C ... 11 = B
   scale: Scale
   gain: number
+  auto_key: boolean
+  follow_melody: boolean
+  double: number // 0..100
+  echo: number // 0..100
+  drive: number // 0..100
 }
 
 export interface ReverbSettings {

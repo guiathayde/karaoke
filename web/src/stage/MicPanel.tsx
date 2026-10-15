@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react'
-import { KEY_NAMES, MicEngine, type EngineConfig, type InputMode } from '../audio/engine'
-import { fmtPoints } from '../lib/format'
-import type { AudioSettings } from '../lib/types'
+import { KEY_NAMES, MicEngine, effectiveKey, type EngineConfig, type InputMode } from '../audio/engine'
+import { presetOf } from '../audio/presets'
+import { fmtPoints, keyText } from '../lib/format'
+import type { AudioSettings, SongKey } from '../lib/types'
 
 const CONFIG_KEY = 'karaoke.micConfig'
 
@@ -34,10 +35,12 @@ export function noteName(freq: number): string {
 export function MicPanel({
   engine,
   audio,
+  songKey,
   onClose,
 }: {
   engine: MicEngine
   audio: AudioSettings
+  songKey: SongKey | null
   onClose: () => void
 }) {
   const [config, setConfig] = useState<EngineConfig>(loadMicConfig)
@@ -128,18 +131,21 @@ export function MicPanel({
                 <div className="muted">
                   {active ? `Nota: ${noteName(pitch?.freq ?? 0)}` : 'sem entrada'}
                   {active && pitch?.shift ? ` · correção ${pitch.shift > 0 ? '+' : ''}${pitch.shift.toFixed(2)} st` : ''}
+                  {active && pitch?.guided ? ' · seguindo o vocal' : ''}
                 </div>
                 <div className="muted">
-                  Autotune {s.enabled ? `${s.strength}%` : 'desligado'} ·{' '}
-                  {s.key === null ? 'cromático' : `${KEY_NAMES[s.key]} ${s.scale === 'minor' ? 'menor' : 'maior'}`}
+                  Autotune {s.enabled ? `${s.strength}%` : 'desligado'} · {keyText(effectiveKey(s, songKey))}
+                  {s.auto_key ? ' (automático)' : ''}
+                  {s.follow_melody ? ' · guiado pelo vocal' : ''}
                 </div>
+                <div className="muted">Efeito: {presetOf(s)?.label ?? 'personalizado'}</div>
               </div>
             )
           })}
         </div>
         <p className="muted">
-          Reverb: {audio.reverb.enabled ? `${audio.reverb.amount}%` : 'desligado'}. Ajustes de autotune e reverb
-          ficam no celular (cada cantor no seu mic; anfitrião em tudo).
+          Reverb: {audio.reverb.enabled ? `${audio.reverb.amount}%` : 'desligado'}. Ajustes de autotune, efeitos e
+          reverb ficam no celular (cada cantor no seu mic; anfitrião em tudo).
         </p>
       </div>
     </div>
