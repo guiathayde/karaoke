@@ -128,3 +128,26 @@ Variáveis de ambiente (prefixo `KARAOKE_`):
   `web/src/stage/scoring.ts` a pontuação e `karaoke/melody.py` a melodia de referência
 - `colab/` notebook para processar músicas com GPU
 - `data/` cache local (ignorado pelo git)
+
+## Ideias para avaliar depois do teste no Mac
+
+Reescrever o projeto em Rust não compensa: o trabalho pesado já roda em bibliotecas nativas (ONNX
+Runtime, CTranslate2, ffmpeg, rubberband) e o yt-dlp só existe em Python. Duas trocas pontuais podem
+valer a pena, dependendo de como soar na festa:
+
+- **Pitch shifter do autotune em WebAssembly.** Hoje `web/public/worklets/autotune.js` desloca o tom
+  com duas leituras cruzadas de uma linha de atraso. É leve, mas não preserva os formantes, então
+  correções grandes deixam a voz "de esquilo" (para cima) ou abafada (para baixo), e podem aparecer
+  chiados nas trocas de grão. A alternativa é um shifter com preservação de formantes (PSOLA ou
+  vocoder de fase) escrito em Rust ou C e compilado para WebAssembly, carregado no mesmo AudioWorklet.
+  O ganho seria de qualidade, não de latência (que vem do navegador e da TV). Só vale fazer se,
+  ouvindo no Mac com o kit Amby, o som atual incomodar, principalmente nos presets "Como o cantor" e
+  "Trap".
+- **Melodia de referência mais precisa.** `karaoke/melody.py` usa o pyin do librosa, que é a etapa
+  mais lenta em Python puro e pode errar a oitava ou perder notas em vocais com efeito ou com
+  vazamento do instrumental. Isso afeta a pontuação, a faixa de notas, a tonalidade automática e o
+  modo "seguir o vocal original". Se aparecerem notas erradas na faixa ou o autotune guiado puxar para
+  notas estranhas, a troca é por um modelo de pitch melhor, ainda em Python (RMVPE ou torchcrepe),
+  mantendo o mesmo formato do `melody.json`. As músicas em cache só são reprocessadas se o
+  `melody.json` delas for apagado e a tonalidade salva (`key_tonic`) for zerada, já que ela só é
+  calculada quando está vazia.
