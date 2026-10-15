@@ -41,6 +41,40 @@ export interface Song {
   key_scale: KeyScale | null
 }
 
+/** Onde o vídeo já está: no Mac, processado no Colab (catálogo do Drive) ou pedido ao Colab. */
+export type LibraryWhere = 'local' | 'drive' | 'requested'
+
+export interface SearchResult extends Video {
+  library: LibraryWhere | null
+}
+
+export interface CatalogEntry {
+  yt_id: string
+  title: string
+  channel: string
+  duration: number | null
+  karaoke: boolean
+  lyrics: boolean
+  model: string | null
+  pack: string | null
+  processed_at: string | null
+}
+
+export interface SongRequest {
+  video: Video
+  is_karaoke_version: boolean
+  requested_by: string | null
+  at: number
+}
+
+export interface LibraryData {
+  local: { video: Video; has_instrumental: boolean; has_lyrics: boolean; karaoke: boolean; in_catalog: boolean }[]
+  drive: CatalogEntry[]
+  requests: SongRequest[]
+  catalog_size: number
+  catalog_updated_at: string | null
+}
+
 export interface Singer {
   id: string
   name: string
@@ -117,6 +151,7 @@ export interface State {
   songs: Record<string, Song>
   separation_enabled: boolean
   audio: AudioSettings
+  library_rev: string
 }
 
 /** Evento de pontuação de letra enviado pelo servidor a cada linha avaliada. */

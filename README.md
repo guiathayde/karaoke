@@ -102,6 +102,20 @@ liste as músicas, rode as células e baixe o `karaoke-pack-*.zip`. Depois, no M
 
 Com o servidor parado, também vale `uv run python -m karaoke.importer pacote.zip`.
 
+### Controle do que já foi processado
+
+- **No notebook:** `MyDrive/karaoke/catalogo.json` registra cada vídeo processado e em qual pacote ele
+  está. Na primeira execução ele é montado a partir dos pacotes que já estão no Drive. A célula 3 pula o
+  que já está no catálogo (`SKIP_DONE`), e a célula 5 lista o catálogo e remove entradas para reprocessar.
+- **No app:** cada pacote leva uma cópia do catálogo. Ao importar, o cartão **Biblioteca** (aba Buscar)
+  passa a mostrar o que está **no Mac** (pronto para tocar, com botão de adicionar à fila), o que está
+  **só no Drive** (com o nome do pacote a importar) e os **pedidos**. A busca marca os vídeos que já
+  existem.
+- **Pedidos ao Colab:** o anfitrião usa "Pedir ao Colab" num resultado da busca. Na Biblioteca →
+  Pedidos, copie a lista para o `SONGS` do notebook, ou baixe o `pedidos.txt` e salve-o em
+  `MyDrive/karaoke/` deixando o `SONGS` vazio. O notebook tira do arquivo o que processou, e o app
+  tira da lista quando o pacote é importado.
+
 ## Desenvolvimento
 
 ```bash

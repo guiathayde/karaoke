@@ -106,6 +106,29 @@ class AudioSettings(BaseModel):
     guide: GuideSettings = Field(default_factory=GuideSettings)
 
 
+class CatalogEntry(BaseModel):
+    """Vídeo já processado no Colab (catalogo.json do Drive, que vem dentro de cada pacote)."""
+
+    yt_id: str
+    title: str = ""
+    channel: str = ""
+    duration: float | None = None
+    karaoke: bool = False  # vídeo que já era versão karaokê (sem separação)
+    lyrics: bool = False
+    model: str | None = None
+    pack: str | None = None  # nome do .zip em que está
+    processed_at: str | None = None  # ISO 8601
+
+
+class SongRequest(BaseModel):
+    """Pedido de processamento no Colab feito pelo celular do anfitrião."""
+
+    video: Video
+    is_karaoke_version: bool = False
+    requested_by: str | None = None
+    at: float
+
+
 class SessionInfo(BaseModel):
     join_url: str
     pin_required: bool = True
@@ -120,6 +143,7 @@ class State(BaseModel):
     songs: dict[str, Song]
     separation_enabled: bool
     audio: AudioSettings
+    library_rev: str = ""  # muda quando a biblioteca muda (o celular busca /api/library de novo)
 
 
 # Corpos de requisição
@@ -183,6 +207,11 @@ class DuetBody(BaseModel):
 
 class EndedBody(BaseModel):
     scores: dict[int, int] | None = None  # mic (1|2) -> pontos de afinação
+
+
+class RequestBody(BaseModel):
+    video: Video
+    is_karaoke_version: bool = False
 
 
 class GuideUpdateBody(BaseModel):

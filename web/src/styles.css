@@ -451,6 +451,74 @@ input[type='password'] {
   gap: 6px;
 }
 
+.hint {
+  font-size: 13px;
+  margin: 6px 0;
+}
+
+.result .actions {
+  flex-wrap: wrap;
+}
+
+.result .actions .row {
+  margin-left: auto;
+}
+
+.result .actions button {
+  white-space: nowrap;
+}
+
+.result .actions button:not(.primary) {
+  background: var(--bg-2);
+  border: 1px solid #2a3145;
+}
+
+.result .badge {
+  margin-top: 4px;
+}
+
+.lib-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+  max-height: 420px;
+  overflow-y: auto;
+}
+
+.lib-list li {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #1f2535;
+}
+
+.lib-list .title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.lib-list .sub {
+  font-size: 12px;
+  color: var(--fg-2);
+}
+
+.lib-list .grow {
+  min-width: 0;
+}
+
+.req-text {
+  width: 100%;
+  margin-top: 10px;
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  background: var(--bg-3);
+  color: var(--fg);
+  border: 1px solid #2a3145;
+  border-radius: 8px;
+  padding: 8px;
+}
+
 .qitem {
   display: grid;
   grid-template-columns: 28px 1fr auto;

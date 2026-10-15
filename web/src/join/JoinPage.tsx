@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { KEY_NAMES } from '../audio/engine'
 import { PRESETS, presetOf } from '../audio/presets'
-import { api, ApiError, getSingerId, saveIdentity } from '../lib/api'
+import { api, ApiError, getSingerId, getToken, saveIdentity } from '../lib/api'
 import { entryReady, fmtDuration, fmtPoints, keyLabel, keyText, singersOf, songKey, statusText } from '../lib/format'
 import { useSession } from '../lib/useSession'
 import type {
   GuideSettings,
+  LibraryData,
+  LibraryWhere,
   MicSettings,
   QueueEntry,
   ReverbSettings,
+  SearchResult,
   Singer,
   SongKey,
   State,
@@ -74,7 +77,8 @@ export function JoinPage() {
           no computador aparecem lado a lado. Assim a busca não perde os resultados ao trocar de aba. */}
       <div className={`panel panel-search ${tab === 'buscar' ? '' : 'mobile-hidden'}`}>
         <h2 className="panel-title">Buscar</h2>
-        <Search state={state} onAdded={(t) => setToast(t)} />
+        <Search state={state} me={me} onAdded={(t) => setToast(t)} />
+        <Library state={state} me={me} onMsg={(t) => setToast(t)} />
       </div>
       <div className={`panel panel-queue ${tab === 'fila' ? '' : 'mobile-hidden'}`}>
         <h2 className="panel-title">Fila ({state.queue.length})</h2>
@@ -210,9 +214,24 @@ function NowPlaying({
   )
 }
 
-function Search({ state, onAdded }: { state: State; onAdded: (msg: string) => void }) {
+const WHERE_LABEL: Record<LibraryWhere, { text: string; cls: string }> = {
+  local: { text: 'no Mac', cls: 'ok' },
+  drive: { text: 'processada no Colab', cls: 'ok' },
+  requested: { text: 'pedida ao Colab', cls: 'warn' },
+}
+
+async function addToQueue(video: Video, isKaraoke: boolean, onMsg: (msg: string) => void) {
+  try {
+    await api<QueueEntry>('/api/queue', { body: { video, is_karaoke_version: isKaraoke } })
+    onMsg('Adicionada à fila')
+  } catch (err) {
+    onMsg(err instanceof Error ? err.message : 'Falha ao adicionar')
+  }
+}
+
+function Search({ state, me, onAdded }: { state: State; me: Singer; onAdded: (msg: string) => void }) {
   const [q, setQ] = useState('')
-  const [results, setResults] = useState<Video[]>([])
+  const [results, setResults] = useState<SearchResult[]>([])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [karaoke, setKaraoke] = useState<Record<string, boolean>>({})
@@ -224,7 +243,7 @@ function Search({ state, onAdded }: { state: State; onAdded: (msg: string) => vo
     setBusy(true)
     setError(null)
     try {
-      setResults(await api<Video[]>(`/api/search?q=${encodeURIComponent(q.trim())}`))
+      setResults(await api<SearchResult[]>(`/api/search?q=${encodeURIComponent(q.trim())}`))
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Busca falhou')
     } finally {
@@ -234,15 +253,18 @@ function Search({ state, onAdded }: { state: State; onAdded: (msg: string) => vo
 
   const add = async (video: Video) => {
     setAdding(video.yt_id)
+    await addToQueue(video, Boolean(karaoke[video.yt_id]), onAdded)
+    setAdding(null)
+  }
+
+  const request = async (r: SearchResult) => {
+    const { library: _where, ...video } = r
     try {
-      await api<QueueEntry>('/api/queue', {
-        body: { video, is_karaoke_version: Boolean(karaoke[video.yt_id]) },
-      })
-      onAdded('Adicionada à fila')
+      await api('/api/requests', { body: { video, is_karaoke_version: Boolean(karaoke[r.yt_id]) } })
+      setResults((list) => list.map((x) => (x.yt_id === r.yt_id ? { ...x, library: 'requested' } : x)))
+      onAdded('Pedida ao Colab')
     } catch (err) {
-      onAdded(err instanceof Error ? err.message : 'Falha ao adicionar')
-    } finally {
-      setAdding(null)
+      onAdded(err instanceof Error ? err.message : 'Falha ao pedir')
     }
   }
 
@@ -274,6 +296,7 @@ function Search({ state, onAdded }: { state: State; onAdded: (msg: string) => vo
               <div className="sub">
                 {v.channel} {v.duration ? `· ${fmtDuration(v.duration)}` : ''}
               </div>
+              {v.library && <span className={`badge ${WHERE_LABEL[v.library].cls}`}>{WHERE_LABEL[v.library].text}</span>}
             </div>
             <div className="actions">
               <label>
@@ -284,13 +307,197 @@ function Search({ state, onAdded }: { state: State; onAdded: (msg: string) => vo
                 />
                 Já é versão karaokê
               </label>
-              <button className="primary" disabled={adding === v.yt_id} onClick={() => add(v)}>
-                {inQueue.has(v.yt_id) ? 'Adicionar de novo' : 'Adicionar'}
-              </button>
+              <div className="row">
+                {me.is_host && v.library === null && (
+                  <button onClick={() => request(v)} title="Processar no Colab (GPU) e importar depois">
+                    Pedir ao Colab
+                  </button>
+                )}
+                <button className="primary" disabled={adding === v.yt_id} onClick={() => add(v)}>
+                  {inQueue.has(v.yt_id) ? 'Adicionar de novo' : 'Adicionar'}
+                </button>
+              </div>
             </div>
           </li>
         ))}
       </ul>
+    </section>
+  )
+}
+
+type LibraryTab = 'local' | 'drive' | 'requests'
+
+/** O que já existe: músicas no Mac, processadas no Colab (catálogo dos pacotes) e pedidos ao Colab. */
+function Library({ state, me, onMsg }: { state: State; me: Singer; onMsg: (msg: string) => void }) {
+  const [data, setData] = useState<LibraryData | null>(null)
+  const [tab, setTab] = useState<LibraryTab>('local')
+  const [filter, setFilter] = useState('')
+  const [text, setText] = useState<string | null>(null)
+  const textRef = useRef<HTMLTextAreaElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    api<LibraryData>('/api/library')
+      .then((d) => !cancelled && setData(d))
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [state.library_rev])
+
+  if (!data) return null
+  const f = filter.trim().toLocaleLowerCase()
+  const match = (title: string, channel: string) => !f || `${title} ${channel}`.toLocaleLowerCase().includes(f)
+  const inQueue = new Set(state.queue.map((e) => e.yt_id))
+
+  // texto para colar no SONGS do notebook (ou salvar como MyDrive/karaoke/pedidos.txt)
+  const loadText = async () => {
+    try {
+      const res = await fetch('/api/requests.txt', { headers: { 'X-Singer-Token': getToken() ?? '' } })
+      if (!res.ok) throw new Error('Falha ao gerar a lista')
+      const t = await res.text()
+      setText(t)
+      return t
+    } catch (err) {
+      onMsg(err instanceof Error ? err.message : 'Falha')
+      return null
+    }
+  }
+  const copy = async () => {
+    const t = await loadText()
+    if (t === null) return
+    try {
+      await navigator.clipboard.writeText(t)
+      onMsg('Lista copiada: cole no SONGS do notebook')
+    } catch {
+      // http na rede local não é contexto seguro: a lista fica selecionada para copiar à mão
+      window.setTimeout(() => {
+        textRef.current?.select()
+        textRef.current?.setSelectionRange(0, t.length) // o Safari do iPhone ignora o select()
+      }, 0)
+      onMsg('Selecione o texto abaixo e copie')
+    }
+  }
+  const download = async () => {
+    const t = await loadText()
+    if (t === null) return
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([t], { type: 'text/plain' }))
+    a.download = 'pedidos.txt'
+    a.click()
+    URL.revokeObjectURL(a.href)
+  }
+  const removeRequest = (ytId: string) =>
+    api(`/api/requests/${ytId}`, { method: 'DELETE' }).catch((err) => onMsg(err instanceof Error ? err.message : 'Falha'))
+
+  const local = data.local.filter((s) => match(s.video.title, s.video.channel))
+  const drive = data.drive.filter((s) => match(s.title, s.channel))
+  const requests = data.requests.filter((r) => match(r.video.title, r.video.channel))
+
+  return (
+    <section className="card">
+      <h2>Biblioteca</h2>
+      <div className="row wrap">
+        <button className={tab === 'local' ? 'primary' : ''} onClick={() => setTab('local')}>
+          No Mac ({data.local.length})
+        </button>
+        <button className={tab === 'drive' ? 'primary' : ''} onClick={() => setTab('drive')}>
+          Só no Drive ({data.drive.length})
+        </button>
+        <button className={tab === 'requests' ? 'primary' : ''} onClick={() => setTab('requests')}>
+          Pedidos ({data.requests.length})
+        </button>
+      </div>
+      <input
+        type="search"
+        placeholder="Filtrar por título ou canal"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+        style={{ marginTop: 10 }}
+      />
+      {tab === 'local' && (
+        <>
+          <p className="muted hint">Prontas para tocar, sem esperar processamento.</p>
+          <ul className="lib-list">
+            {local.map((s) => (
+              <li key={s.video.yt_id}>
+                <div className="grow">
+                  <div className="title">{s.video.title}</div>
+                  <div className="sub">
+                    {s.video.channel} {s.video.duration ? `· ${fmtDuration(s.video.duration)}` : ''}
+                    {s.karaoke ? ' · versão karaokê' : !s.has_instrumental ? ' · sem voz separada' : ''}
+                    {s.has_lyrics ? ' · letra' : ''}
+                  </div>
+                </div>
+                <button
+                  className={inQueue.has(s.video.yt_id) ? '' : 'primary'}
+                  onClick={() => addToQueue(s.video, s.karaoke, onMsg)}
+                >
+                  {inQueue.has(s.video.yt_id) ? 'De novo' : 'Adicionar'}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {tab === 'drive' && (
+        <>
+          <p className="muted hint">
+            Já processadas no Colab, mas ainda não importadas neste Mac. Copie o pacote indicado do Drive para{' '}
+            <code>data/import</code> e importe.
+            {data.catalog_updated_at ? ` Catálogo de ${data.catalog_updated_at.slice(0, 16).replace('T', ' ')}.` : ''}
+            {data.catalog_size === 0 ? ' O catálogo chega junto com o próximo pacote importado do notebook.' : ''}
+          </p>
+          <ul className="lib-list">
+            {drive.map((e) => (
+              <li key={e.yt_id}>
+                <div className="grow">
+                  <div className="title">{e.title || e.yt_id}</div>
+                  <div className="sub">
+                    {e.channel} {e.duration ? `· ${fmtDuration(e.duration)}` : ''} · {e.pack ?? 'pacote desconhecido'}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {tab === 'requests' && (
+        <>
+          <p className="muted hint">
+            Músicas para processar no Colab. Cole a lista no <code>SONGS</code> do notebook ou salve como{' '}
+            <code>MyDrive/karaoke/pedidos.txt</code> (usado quando o <code>SONGS</code> está vazio). Saem daqui
+            quando o pacote com elas é importado.
+          </p>
+          {me.is_host && data.requests.length > 0 && (
+            <div className="row wrap">
+              <button className="primary" onClick={copy}>
+                Copiar lista
+              </button>
+              <button onClick={download}>Baixar pedidos.txt</button>
+            </div>
+          )}
+          {text !== null && (
+            <textarea ref={textRef} className="req-text" readOnly value={text} rows={Math.min(10, text.split('\n').length)} />
+          )}
+          <ul className="lib-list">
+            {requests.map((r) => (
+              <li key={r.video.yt_id}>
+                <div className="grow">
+                  <div className="title">{r.video.title}</div>
+                  <div className="sub">
+                    {r.video.channel}
+                    {r.is_karaoke_version ? ' · versão karaokê' : ''}
+                    {r.requested_by ? ` · pedida por ${r.requested_by}` : ''}
+                  </div>
+                </div>
+                {me.is_host && <button onClick={() => removeRequest(r.video.yt_id)}>Remover</button>}
+              </li>
+            ))}
+          </ul>
+          {!me.is_host && <p className="muted hint">Só o anfitrião faz pedidos ao Colab.</p>}
+        </>
+      )}
     </section>
   )
 }
@@ -624,7 +831,7 @@ function AutotuneCard({
           </button>
         ))}
       </div>
-      <p className="muted small">{preset ? preset.hint : 'Personalizado.'}</p>
+      <p className="muted hint">{preset ? preset.hint : 'Personalizado.'}</p>
       <label className="row">
         <span className="grow">Autotune ligado</span>
         <input type="checkbox" checked={settings.enabled} onChange={(e) => send({ enabled: e.target.checked })} />
@@ -654,7 +861,7 @@ function AutotuneCard({
         />
       </label>
       {settings.follow_melody && (
-        <p className="muted small">
+        <p className="muted hint">
           {hasMelody
             ? 'Corrige para a nota que o cantor original canta em cada momento (quando você está perto dela).'
             : 'A música atual não tem melodia do vocal; vale a tonalidade abaixo.'}
@@ -681,7 +888,7 @@ function AutotuneCard({
         </select>
       </div>
       {settings.auto_key && !detected && (
-        <p className="muted small">Sem tonalidade detectada para a música atual: corrige para qualquer nota (cromática).</p>
+        <p className="muted hint">Sem tonalidade detectada para a música atual: corrige para qualquer nota (cromática).</p>
       )}
       <h3>Efeitos</h3>
       <SliderField label="Dobra de voz" value={settings.double} onChange={(v) => send({ double: v })} />

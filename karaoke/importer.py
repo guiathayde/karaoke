@@ -1,7 +1,8 @@
 """Importa pacotes (.zip) gerados pelo notebook do Colab para o cache local.
 
 Formato do pacote: songs/<yt_id>/{song.json, original.mp4, instrumental.mp4, vocals.m4a}
-`song.json` segue o modelo `Song` (video, lyrics, lyrics_source).
+`song.json` segue o modelo `Song` (video, lyrics, lyrics_source). Pacotes novos trazem também
+`catalogo.json` na raiz (tudo o que já foi processado no Colab), mesclado na biblioteca.
 """
 
 from __future__ import annotations
@@ -13,17 +14,25 @@ import sys
 import zipfile
 from pathlib import Path
 
+from .library import Library
 from .models import Song
 from .storage import INSTRUMENTAL, ORIGINAL, VOCALS, Storage
 
 log = logging.getLogger("karaoke.importer")
 
 ALLOWED = {"song.json", ORIGINAL, INSTRUMENTAL, VOCALS}
+CATALOG = "catalogo.json"
 
 
-def import_zip(zip_path: Path, storage: Storage) -> list[str]:
+def import_zip(zip_path: Path, storage: Storage, library: Library | None = None) -> list[str]:
     imported: list[str] = []
     with zipfile.ZipFile(zip_path) as z:
+        if library is not None and CATALOG in z.namelist():
+            try:
+                added = library.merge_catalog(json.loads(z.read(CATALOG)))
+                log.info("pacote %s: catálogo mesclado (%d vídeo(s) novo(s))", zip_path.name, added)
+            except ValueError as exc:
+                log.warning("pacote %s: catalogo.json inválido (%s)", zip_path.name, exc)
         entries: dict[str, dict[str, zipfile.ZipInfo]] = {}
         for info in z.infolist():
             if info.is_dir():
@@ -63,17 +72,19 @@ def import_zip(zip_path: Path, storage: Storage) -> list[str]:
             song.error = None
             storage.save(song)
             imported.append(yt_id)
+    if library is not None:
+        library.prune_requests(storage.all())
     return imported
 
 
-def scan_import_dir(import_dir: Path, storage: Storage) -> list[str]:
+def scan_import_dir(import_dir: Path, storage: Storage, library: Library | None = None) -> list[str]:
     """Importa todos os .zip da pasta e move os processados para import/done/."""
     import_dir.mkdir(parents=True, exist_ok=True)
     done = import_dir / "done"
     imported: list[str] = []
     for zip_path in sorted(import_dir.glob("*.zip")):
         try:
-            ids = import_zip(zip_path, storage)
+            ids = import_zip(zip_path, storage, library)
         except zipfile.BadZipFile:
             log.warning("arquivo inválido ignorado: %s", zip_path)
             continue
@@ -92,8 +103,9 @@ def main(argv: list[str]) -> int:
         return 2
     settings.ensure_dirs()
     storage = Storage(settings.db_path, settings.media_dir)
+    library = Library(settings.data_dir)
     for arg in argv:
-        ids = import_zip(Path(arg), storage)
+        ids = import_zip(Path(arg), storage, library)
         print(f"{arg}: {len(ids)} música(s) importada(s): {', '.join(ids) or '-'}")
     print("Se o servidor estiver rodando, reinicie-o (ou use a pasta data/import e o botão Importar).")
     return 0

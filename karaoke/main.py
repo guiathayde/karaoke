@@ -13,12 +13,13 @@ from typing import Any
 import numpy as np
 import segno
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from . import importer, youtube
 from .config import settings
 from .hub import Hub
+from .library import Library, is_local
 from .lyric_score import LyricScorer
 from .models import (
     AddToQueueBody,
@@ -32,6 +33,7 @@ from .models import (
     MicUpdateBody,
     MoveBody,
     ProgressBody,
+    RequestBody,
     ReverbUpdateBody,
     SessionInfo,
     Singer,
@@ -73,6 +75,7 @@ def base_url() -> str:
 # --- estado global -----------------------------------------------------------
 settings.ensure_dirs()
 storage = Storage(settings.db_path, settings.media_dir)
+library = Library(settings.data_dir)
 session = Session(lambda e: entry_is_ready(e, storage.get(e.yt_id), settings), settings.settings_path)
 
 
@@ -92,6 +95,7 @@ def build_state() -> dict[str, Any]:
         songs=songs,
         separation_enabled=settings.separation_enabled,
         audio=session.audio,
+        library_rev=f"{library.rev}.{sum(1 for s in storage.all().values() if is_local(s))}",
     )
     return state.model_dump(mode="json")
 
@@ -144,7 +148,8 @@ pipeline = Pipeline(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     hub.loop = asyncio.get_running_loop()
-    imported = importer.scan_import_dir(settings.import_dir, storage)
+    imported = importer.scan_import_dir(settings.import_dir, storage, library)
+    library.prune_requests(storage.all())
     if imported:
         log.info("pacotes importados de %s: %s", settings.import_dir, imported)
     task = asyncio.create_task(pipeline.run())
@@ -254,7 +259,8 @@ async def search(q: str, request: Request) -> list[dict[str, Any]]:
     except Exception as exc:
         log.exception("busca falhou")
         raise HTTPException(502, f"Busca no YouTube falhou: {str(exc)[:200]}") from exc
-    return [v.model_dump() for v in videos]
+    songs = storage.all()
+    return [{**v.model_dump(), "library": library.where(v.yt_id, songs)} for v in videos]
 
 
 @app.post("/api/queue")
@@ -468,9 +474,51 @@ async def update_guide(body: GuideUpdateBody, request: Request) -> dict[str, Any
 @app.post("/api/import/scan")
 async def import_scan(request: Request) -> dict[str, Any]:
     require_host(request)
-    imported = await asyncio.to_thread(importer.scan_import_dir, settings.import_dir, storage)
+    imported = await asyncio.to_thread(importer.scan_import_dir, settings.import_dir, storage, library)
     changed()
     return {"imported": imported, "import_dir": str(settings.import_dir)}
+
+
+# --- biblioteca e pedidos para o Colab ----------------------------------------
+@app.get("/api/library")
+def get_library(request: Request) -> dict[str, Any]:
+    if me(request) is None and not is_host(request):
+        raise HTTPException(401, "Entre na sessão primeiro")
+    songs = storage.all()
+    library.prune_requests(songs)  # pedidos que o próprio Mac já processou
+    return library.snapshot(songs)
+
+
+@app.post("/api/requests")
+async def add_request(body: RequestBody, request: Request) -> dict[str, Any]:
+    require_host(request)
+    songs = storage.all()
+    where = library.where(body.video.yt_id, songs)
+    if where in ("local", "drive"):
+        raise HTTPException(409, "Já processada: está no Mac" if where == "local" else "Já processada no Colab")
+    singer = me(request)
+    try:
+        req = library.add_request(body.video, body.is_karaoke_version, singer.name if singer else None)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    changed()
+    return req.model_dump()
+
+
+@app.delete("/api/requests/{yt_id}", status_code=204)
+async def remove_request(yt_id: str, request: Request) -> Response:
+    require_host(request)
+    library.remove_requests({yt_id})
+    changed()
+    return Response(status_code=204)
+
+
+@app.get("/api/requests.txt")
+def requests_txt(request: Request) -> PlainTextResponse:
+    require_host(request)
+    return PlainTextResponse(
+        library.requests_text(), headers={"Content-Disposition": 'attachment; filename="pedidos.txt"'}
+    )
 
 
 # --- utilidades --------------------------------------------------------------
