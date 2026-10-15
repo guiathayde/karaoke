@@ -67,6 +67,7 @@ def import_zip(zip_path: Path, storage: Storage, library: Library | None = None)
             existing = storage.get(yt_id)
             if existing and existing.lyrics and not song.lyrics:
                 song.lyrics, song.lyrics_source = existing.lyrics, existing.lyrics_source
+                song.lyrics_aligned = existing.lyrics_aligned
             song.status = "ready"
             song.progress = 1.0
             song.error = None

@@ -113,6 +113,9 @@ Com o servidor parado, também vale `uv run python -m karaoke.importer pacote.zi
   passa a mostrar o que está **no Mac** (pronto para tocar, com botão de adicionar à fila), o que está
   **só no Drive** (com o nome do pacote a importar) e os **pedidos**. A busca marca os vídeos que já
   existem.
+- **Letras no Colab:** com `ALIGN_LYRICS`, o notebook transcreve a voz separada na GPU e põe cada linha da
+  letra onde ela é cantada no vídeo. Quando o lrclib só tem a letra em texto (sem tempos), os tempos são
+  criados assim. Os pacotes já chegam com a letra alinhada e o Mac não refaz esse trabalho.
 - **Pedidos ao Colab:** o anfitrião usa "Pedir ao Colab" num resultado da busca. Na Biblioteca →
   Pedidos, copie a lista para o `SONGS` do notebook, ou baixe o `pedidos.txt` e salve-o em
   `MyDrive/karaoke/` deixando o `SONGS` vazio. O notebook tira do arquivo o que processou, e o app
