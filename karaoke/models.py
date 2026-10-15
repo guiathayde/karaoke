@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import html
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 SongStatus = Literal["pending", "downloading", "separating", "muxing", "melody", "lyrics", "ready", "error"]
 PlayerStatus = Literal["idle", "waiting", "playing", "paused", "stopped"]
 Scale = Literal["chromatic", "major", "minor"]
 KeyScale = Literal["major", "minor"]
+
+
+def unescape(text: str) -> str:
+    """Alguns títulos chegam do yt-dlp com entidades HTML ("Letra &amp; Download")."""
+    return html.unescape(text) if "&" in text else text
 
 
 class Video(BaseModel):
@@ -18,6 +24,8 @@ class Video(BaseModel):
     channel: str = ""
     duration: float | None = None
     thumbnail: str | None = None
+
+    _unescape = field_validator("title", "channel")(unescape)
 
 
 class LyricLine(BaseModel):
@@ -118,6 +126,8 @@ class CatalogEntry(BaseModel):
     model: str | None = None
     pack: str | None = None  # nome do .zip em que está
     processed_at: str | None = None  # ISO 8601
+
+    _unescape = field_validator("title", "channel")(unescape)
 
 
 class SongRequest(BaseModel):

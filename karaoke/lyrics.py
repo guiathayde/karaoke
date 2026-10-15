@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
+import html
+import logging
 import re
 import unicodedata
 
@@ -28,9 +31,16 @@ _TAIL = re.compile(
 _SEP = re.compile(r"\s+[-–—|]\s+")
 _LRC = re.compile(r"\[(\d+):(\d+(?:\.\d+)?)\]")
 
+log = logging.getLogger("karaoke.lyrics")
+RETRIES = 5
+
+
+class LyricsUnavailable(Exception):
+    """O lrclib não respondeu (limite de requisições ou rede): não dá para dizer que a música não tem letra."""
+
 
 def clean_title(title: str) -> str:
-    t = _NOISE.sub("", unicodedata.normalize("NFC", title))
+    t = _NOISE.sub("", unicodedata.normalize("NFC", html.unescape(title)))
     for _ in range(3):
         stripped = _TAIL.sub("", t)
         if stripped == t:
@@ -86,18 +96,38 @@ def _score(item: dict, duration: float | None) -> float | None:
     return 4.0
 
 
+async def _search(client: httpx.AsyncClient, q: str) -> list | None:
+    """Uma busca no lrclib, esperando e tentando de novo quando ele limita as requisições (429) ou falha."""
+    for attempt in range(RETRIES):
+        try:
+            r = await client.get(f"{API}/search", params={"q": q})
+            if r.status_code == 429 or r.status_code >= 500:
+                # o Retry-After do lrclib costuma ser 1 s, curto demais para a janela dele: espera pelo menos 2, 4, 8, 16 s
+                retry_after = r.headers.get("Retry-After", "")
+                wait = min(max(float(retry_after) if retry_after.isdigit() else 0.0, 2.0 * 2**attempt), 30.0)
+                log.info("lrclib respondeu %d para %r; nova tentativa em %.0f s", r.status_code, q, wait)
+                await asyncio.sleep(wait)
+                continue
+            r.raise_for_status()
+            items = r.json()
+            return items if isinstance(items, list) else None
+        except (httpx.HTTPError, ValueError):
+            await asyncio.sleep(2.0 * 2**attempt)
+    return None
+
+
 async def fetch_synced(title: str, duration: float | None) -> tuple[list[LyricLine], str] | None:
-    """Tenta algumas buscas e devolve (linhas, descrição da fonte) ou None."""
+    """Tenta algumas buscas e devolve (linhas, descrição da fonte); None quando o lrclib não tem a letra.
+
+    Levanta LyricsUnavailable se alguma busca não teve resposta, para a música não ficar marcada como sem letra.
+    """
     queries = title_queries(title)
+    unanswered = 0
     async with httpx.AsyncClient(timeout=15, headers={"User-Agent": UA}) as client:
         for q in queries:
-            try:
-                r = await client.get(f"{API}/search", params={"q": q})
-                r.raise_for_status()
-                items = r.json()
-            except (httpx.HTTPError, ValueError):
-                continue
-            if not isinstance(items, list):  # erro ou limite de requisições vem como objeto
+            items = await _search(client, q)
+            if items is None:
+                unanswered += 1
                 continue
             best: tuple[float, dict] | None = None
             for item in items:
@@ -110,4 +140,6 @@ async def fetch_synced(title: str, duration: float | None) -> tuple[list[LyricLi
                 if lines:
                     source = f"lrclib: {item.get('artistName')} - {item.get('trackName')}"
                     return lines, source
+    if unanswered:
+        raise LyricsUnavailable(f"{unanswered} de {len(queries)} busca(s) sem resposta do lrclib")
     return None

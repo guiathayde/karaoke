@@ -70,6 +70,7 @@ class Pipeline:
         self._failed_variants: set[str] = set()
         self._failed_melody: set[str] = set()
         self._failed_align: set[str] = set()
+        self._tried_lyrics: set[str] = set()  # nova busca de letra: uma por música a cada execução do servidor
 
     def kick(self) -> None:
         self.wake.set()
@@ -90,6 +91,8 @@ class Pipeline:
                     await self._render_melody(song)
                 elif kind == "align":
                     await self._align_lyrics(song)
+                elif kind == "lyrics":
+                    await self._retry_lyrics(song)
                 else:
                     await self._render_key(entry, song)
             except Exception as exc:
@@ -101,6 +104,8 @@ class Pipeline:
                     self._failed_melody.add(song.video.yt_id)
                 elif kind == "align":
                     self._failed_align.add(song.video.yt_id)
+                elif kind == "lyrics":
+                    pass  # _retry_lyrics já marcou a tentativa; a música segue sem letra
                 else:
                     song.rendering = None
                     self._failed_variants.add(entry_variant_name(entry, self.settings) or "")
@@ -125,6 +130,14 @@ class Pipeline:
                 continue
             if song.has_vocals and not song.has_melody and song.video.yt_id not in self._failed_melody:
                 return entry, song, "melody"
+            # sem letra (busca anterior falhou ou o pacote do Colab veio sem): tenta de novo, sem mexer no status
+            if (
+                not entry.is_karaoke_version
+                and song.lyrics is None
+                and song.lyrics_source != "video"
+                and song.video.yt_id not in self._tried_lyrics
+            ):
+                return entry, song, "lyrics"
             if (
                 self.settings.asr_enabled
                 and song.has_vocals
@@ -182,17 +195,31 @@ class Pipeline:
             await self._set(song, "lyrics")
             try:
                 found = await lyrics_api.fetch_synced(song.video.title, song.video.duration)
+                if found:
+                    song.lyrics, song.lyrics_source = found
+                else:
+                    song.lyrics_source = "none"
+                self._tried_lyrics.add(yt_id)
             except Exception:
+                # lrclib fora do ar ou limitando: lyrics_source fica None e a busca é refeita depois
                 log.exception("falha ao buscar letra de %s", yt_id)
-                found = None
-            if found:
-                song.lyrics, song.lyrics_source = found
-            else:
-                song.lyrics_source = "none"
             self.storage.save(song)
 
         song.progress = 1.0
         await self._set(song, "ready")
+
+    async def _retry_lyrics(self, song: Song) -> None:
+        """Busca a letra de uma música pronta que ficou sem (o pacote do Colab pode ter tomado limite do lrclib)."""
+        yt_id = song.video.yt_id
+        self._tried_lyrics.add(yt_id)
+        found = await lyrics_api.fetch_synced(song.video.title, song.video.duration)
+        if found:
+            song.lyrics, song.lyrics_source = found
+            song.lyrics_aligned = None
+            log.info("letra encontrada para %s: %s", yt_id, song.lyrics_source)
+        else:
+            song.lyrics_source = "none"
+        self.storage.save(song)
 
     async def _render_melody(self, song: Song) -> None:
         """Melodia para músicas já em cache (sem mudar o status, para não interromper a reprodução)."""
