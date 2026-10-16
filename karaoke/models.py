@@ -87,7 +87,8 @@ class MicSettings(BaseModel):
     speed_ms: int = Field(20, ge=1, le=500)
     key: int | None = Field(None, ge=0, le=11)  # 0 = C ... 11 = B; None = cromático
     scale: Scale = "chromatic"
-    gain: float = Field(1.0, ge=0, le=2)
+    gain: float = Field(1.0, ge=0, le=4)  # volume do mic (4 = +12 dB)
+    boost_db: int = Field(0, ge=0, le=36)  # pré-ganho digital na entrada do canal (0..+36 dB, antes do autotune)
     auto_key: bool = True  # usa a tonalidade detectada da música (key/scale ficam como reserva)
     follow_melody: bool = False  # corrige para a nota do vocal original em vez da nota mais próxima da escala
     double: int = Field(0, ge=0, le=100)  # dobra de voz
@@ -108,10 +109,17 @@ class GuideSettings(BaseModel):
     duck: bool = True  # some quando alguém canta no microfone
 
 
+class MusicSettings(BaseModel):
+    """Volume da música no palco (o vídeo); a voz guia acompanha."""
+
+    volume: int = Field(100, ge=0, le=100)
+
+
 class AudioSettings(BaseModel):
     mics: list[MicSettings] = Field(default_factory=lambda: [MicSettings(), MicSettings()])
     reverb: ReverbSettings = Field(default_factory=ReverbSettings)
     guide: GuideSettings = Field(default_factory=GuideSettings)
+    music: MusicSettings = Field(default_factory=MusicSettings)
 
 
 class CatalogEntry(BaseModel):
@@ -190,7 +198,8 @@ class MicUpdateBody(BaseModel):
     key: int | None = Field(None, ge=0, le=11)
     chromatic: bool | None = None  # True zera a tonalidade (escala cromática)
     scale: Scale | None = None
-    gain: float | None = Field(None, ge=0, le=2)
+    gain: float | None = Field(None, ge=0, le=4)
+    boost_db: int | None = Field(None, ge=0, le=36)
     auto_key: bool | None = None
     follow_melody: bool | None = None
     double: int | None = Field(None, ge=0, le=100)
@@ -228,3 +237,7 @@ class GuideUpdateBody(BaseModel):
     enabled: bool | None = None
     volume: int | None = Field(None, ge=0, le=100)
     duck: bool | None = None
+
+
+class MusicUpdateBody(BaseModel):
+    volume: int | None = Field(None, ge=0, le=100)

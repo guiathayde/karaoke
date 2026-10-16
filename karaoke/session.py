@@ -70,6 +70,17 @@ class Session:
         self.queue = [e for e in self.queue if e.id != entry_id]
         self.refresh_player()
 
+    def remove_song(self, yt_id: str) -> None:
+        """Remove da fila e do histórico todas as entradas de um vídeo apagado."""
+        cur = self.current()
+        if cur and cur.yt_id == yt_id:
+            self.player = Player()
+            self._paused = False
+            self._stopped = False
+        self.queue = [e for e in self.queue if e.yt_id != yt_id]
+        self.history = [e for e in self.history if e.yt_id != yt_id]
+        self.refresh_player()
+
     def move(self, entry_id: str, position: int) -> None:
         entry = self.entry(entry_id)
         if entry is None:

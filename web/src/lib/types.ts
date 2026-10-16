@@ -117,7 +117,8 @@ export interface MicSettings {
   speed_ms: number
   key: number | null // 0 = C ... 11 = B
   scale: Scale
-  gain: number
+  gain: number // volume do mic, 0..4
+  boost_db: number // pré-ganho digital na entrada do canal, 0..36 dB (antes da detecção de nota)
   auto_key: boolean
   follow_melody: boolean
   double: number // 0..100
@@ -136,10 +137,15 @@ export interface GuideSettings {
   duck: boolean // some quando alguém canta
 }
 
+export interface MusicSettings {
+  volume: number // 0..100; a voz guia acompanha
+}
+
 export interface AudioSettings {
   mics: MicSettings[]
   reverb: ReverbSettings
   guide: GuideSettings
+  music: MusicSettings
 }
 
 export interface State {

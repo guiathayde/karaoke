@@ -32,6 +32,7 @@ from .models import (
     MicBody,
     MicUpdateBody,
     MoveBody,
+    MusicUpdateBody,
     ProgressBody,
     RequestBody,
     ReverbUpdateBody,
@@ -428,7 +429,7 @@ async def player_ended(request: Request, body: EndedBody | None = None) -> dict[
     return session.player.model_dump()
 
 
-# --- áudio: autotune e reverb ------------------------------------------------
+# --- áudio: autotune, reverb, voz guia e música ------------------------------
 @app.post("/api/audio/mic/{n}")
 async def update_mic(n: int, body: MicUpdateBody, request: Request) -> dict[str, Any]:
     if n not in (1, 2):
@@ -468,6 +469,16 @@ async def update_guide(body: GuideUpdateBody, request: Request) -> dict[str, Any
     session.save_audio()
     changed()
     return session.audio.guide.model_dump()
+
+
+@app.post("/api/audio/music")
+async def update_music(body: MusicUpdateBody, request: Request) -> dict[str, Any]:
+    require_control(request)
+    for field, value in body.model_dump(exclude_none=True).items():
+        setattr(session.audio.music, field, value)
+    session.save_audio()
+    changed()
+    return session.audio.music.model_dump()
 
 
 # --- importação de pacotes (zip do Colab) ------------------------------------
@@ -519,6 +530,25 @@ def requests_txt(request: Request) -> PlainTextResponse:
     return PlainTextResponse(
         library.requests_text(), headers={"Content-Disposition": 'attachment; filename="pedidos.txt"'}
     )
+
+
+@app.delete("/api/songs/{yt_id}", status_code=204)
+async def delete_song(yt_id: str, request: Request) -> Response:
+    """Apaga uma música do Mac (arquivos + banco), do catálogo local e da fila."""
+    require_host(request)
+    if "/" in yt_id or ".." in yt_id:
+        raise HTTPException(400, "ID inválido")
+    has_local = storage.get(yt_id) is not None or storage.song_dir(yt_id).exists()
+    in_cat = yt_id in library.catalog
+    if not has_local and not in_cat:
+        raise HTTPException(404, "Música não encontrada")
+    session.remove_song(yt_id)
+    storage.delete(yt_id)
+    library.remove_catalog(yt_id)
+    library.remove_requests({yt_id})
+    library.rev += 1
+    changed()
+    return Response(status_code=204)
 
 
 # --- utilidades --------------------------------------------------------------

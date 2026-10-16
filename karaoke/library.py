@@ -90,6 +90,14 @@ class Library:
         self.rev += 1
         return added
 
+    def remove_catalog(self, yt_id: str) -> bool:
+        if yt_id not in self.catalog:
+            return False
+        del self.catalog[yt_id]
+        self._save_catalog()
+        self.rev += 1
+        return True
+
     # --- pedidos ----------------------------------------------------------
     def add_request(self, video: Video, is_karaoke_version: bool, requested_by: str | None) -> SongRequest:
         if not _YT_ID.match(video.yt_id):

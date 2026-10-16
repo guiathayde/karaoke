@@ -139,7 +139,7 @@ export function StagePage() {
         <JoinCard state={state} />
         <Transport state={state} progress={progress} guide={guideInfo} />
         <QueueList state={state} />
-        <MicStatus engine={engine} audio={state.audio} scores={current ? liveScores : null} />
+        <MicStatus engine={engine} audio={state.audio} scores={current ? liveScores : null} onOpen={() => setShowMics(true)} />
         {current && <ScoreStatus entry={current} state={state} lyric={lyric} />}
       </aside>
       {showMics && engine && (
@@ -218,7 +218,9 @@ function Transport({
           </div>
         </>
       )}
-      <div className="muted small">Voz guia: {guideText}</div>
+      <div className="muted small">
+        Música: {state.audio.music.volume}% · Voz guia: {guideText}
+      </div>
     </div>
   )
 }
@@ -307,6 +309,12 @@ function Player({
   const guideName = guideFile(entry, song)
   const guideSrc = guideName ? `/media/${entry.yt_id}/${guideName}` : null
   const guideCfg = state.audio.guide
+  const musicVolume = state.audio.music.volume / 100
+
+  // volume da música (o volume do elemento sobrevive à troca de src)
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.volume = musicVolume
+  }, [musicVolume])
 
   // --- voz guia: mesmo arquivo de vocais, sincronizado com o vídeo ---
   useEffect(() => {
@@ -354,7 +362,7 @@ function Player({
       const now = Date.now()
       if (engine?.running && engine.voiceActive()) lastActive = now
       const ducked = guideCfg.duck && now - lastActive < 1000
-      const target = guideCfg.enabled && guideSrc ? (ducked ? 0 : guideCfg.volume / 100) : 0
+      const target = guideCfg.enabled && guideSrc ? (ducked ? 0 : (guideCfg.volume / 100) * musicVolume) : 0
       const cur = g.volume
       const step = target < cur ? 0.08 : 0.025
       g.volume = Math.abs(target - cur) <= step ? target : cur + Math.sign(target - cur) * step
@@ -364,7 +372,7 @@ function Player({
       }
     }, 40)
     return () => window.clearInterval(id)
-  }, [engine, guideCfg.enabled, guideCfg.volume, guideCfg.duck, guideSrc, onGuide])
+  }, [engine, guideCfg.enabled, guideCfg.volume, guideCfg.duck, guideSrc, musicVolume, onGuide])
 
   useEffect(() => {
     onScores(scoring.scoring ? scoring.scores : null)

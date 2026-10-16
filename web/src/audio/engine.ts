@@ -44,8 +44,17 @@ export function scaleMask(key: number | null, scale: Scale): boolean[] {
   return mask
 }
 
+export interface MeterInfo {
+  rms: number
+  peak: number
+  db: number
+  clipping: boolean
+}
+
 interface Chain {
   hpf: BiquadFilterNode
+  preGain: GainNode
+  comp: DynamicsCompressorNode
   worklet: AudioWorkletNode
   fx: AudioNode[] // saturação e dobra (desconectados juntos)
   lfos: OscillatorNode[]
@@ -85,13 +94,17 @@ function driveCurve(): Float32Array<ArrayBuffer> {
 export class MicEngine {
   readonly ctx: AudioContext
   private bus: GainNode
+  private limiter: DynamicsCompressorNode
   private reverbSend: GainNode
   private convolver: ConvolverNode
   private echoIn: GainNode
   private melody: { hop: number; notes: Float32Array } | null = null
   private chains: (Chain | null)[] = [null, null]
+  private lastMics: [MicSettings | null, MicSettings | null] = [null, null]
+  private lastKey: SongKey | null = null
   private streams: MediaStream[] = []
   private sources: AudioNode[] = []
+  private splitters: AudioNode[] = []
   private levelBuf = new Float32Array(1024)
   private workletReady: Promise<void>
   /** Tempo atual do vídeo (ou null fora de reprodução); carimba o áudio enviado ao servidor. */
@@ -100,12 +113,20 @@ export class MicEngine {
   constructor() {
     this.ctx = new AudioContext({ latencyHint: 'interactive', sampleRate: 48000 })
     this.bus = this.ctx.createGain()
+    // Limitador de segurança no barramento final: impede distorção digital mesmo com ganho/boost alto nos 2 mics
+    this.limiter = this.ctx.createDynamicsCompressor()
+    this.limiter.threshold.value = -1.5
+    this.limiter.knee.value = 3
+    this.limiter.ratio.value = 20
+    this.limiter.attack.value = 0.001
+    this.limiter.release.value = 0.08
     this.reverbSend = this.ctx.createGain()
     this.reverbSend.gain.value = 0
     this.convolver = this.ctx.createConvolver()
     this.convolver.buffer = makeImpulse(this.ctx)
-    this.bus.connect(this.ctx.destination)
-    this.bus.connect(this.reverbSend)
+    this.bus.connect(this.limiter)
+    this.limiter.connect(this.ctx.destination)
+    this.limiter.connect(this.reverbSend)
     this.reverbSend.connect(this.convolver)
     this.convolver.connect(this.ctx.destination)
     // eco compartilhado: cada mic manda uma parte do sinal; repetições escurecem a cada volta
@@ -121,7 +142,7 @@ export class MicEngine {
     echoDelay.connect(echoTone)
     echoTone.connect(echoFeedback)
     echoFeedback.connect(echoDelay)
-    echoTone.connect(this.ctx.destination)
+    echoTone.connect(this.limiter)
     echoTone.connect(this.reverbSend)
     // o autotune guiado precisa saber em que ponto do vídeo estamos
     window.setInterval(() => this.postClock(), 250)
@@ -168,17 +189,24 @@ export class MicEngine {
     }
 
     if (config.mode === 'mono') {
-      const src = await open(config.deviceA, 1)
+      // Soma os 2 canais da interface sem a atenuação de -6 dB (0.5 * (L + R)) do downmix padrão
+      const src = await open(config.deviceA, 2)
+      const splitter = this.ctx.createChannelSplitter(2)
       const mono = this.ctx.createGain()
       mono.channelCount = 1
       mono.channelCountMode = 'explicit'
-      src.connect(mono)
+      src.connect(splitter)
+      splitter.connect(mono, 0)
+      splitter.connect(mono, 1)
+      this.splitters.push(splitter, mono)
       this.chains[0] = this.buildChain(mono, 0, 0)
       this.chains[1] = null
     } else if (config.mode === 'stereo') {
+      // Interface USB de 2 canais (ex.: Q-12): separa Canal 1 (Esq) -> Mic 1 e Canal 2 (Dir) -> Mic 2
       const src = await open(config.deviceA, 2)
       const splitter = this.ctx.createChannelSplitter(2)
       src.connect(splitter)
+      this.splitters.push(splitter)
       this.chains[0] = this.buildChain(splitter, 0, 0)
       this.chains[1] = this.buildChain(splitter, 1, 1)
     } else {
@@ -187,6 +215,9 @@ export class MicEngine {
       this.chains[0] = this.buildChain(a, 0, 0)
       this.chains[1] = this.buildChain(b, 0, 1)
     }
+
+    if (this.lastMics[0]) this.applyMic(0, this.lastMics[0], this.lastKey)
+    if (this.lastMics[1]) this.applyMic(1, this.lastMics[1], this.lastKey)
   }
 
   private connectMicSocket(chain: Chain, index: 0 | 1): void {
@@ -206,6 +237,19 @@ export class MicEngine {
     hpf.frequency.value = 80
     hpf.channelCount = 1
     hpf.channelCountMode = 'explicit'
+    // Pré-amplificador digital individual do canal (atua logo após o ChannelSplitterNode e antes do autotune/pontuação)
+    const preGain = this.ctx.createGain()
+    preGain.channelCount = 1
+    preGain.channelCountMode = 'explicit'
+    // Compressor/limitador por canal: levanta sinais fracos sem estourar quando cantam forte
+    const comp = this.ctx.createDynamicsCompressor()
+    comp.threshold.value = -10
+    comp.knee.value = 8
+    comp.ratio.value = 6
+    comp.attack.value = 0.003
+    comp.release.value = 0.15
+    comp.channelCount = 1
+    comp.channelCountMode = 'explicit'
     const worklet = new AudioWorkletNode(this.ctx, 'autotune', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
@@ -264,6 +308,8 @@ export class MicEngine {
     mute.gain.value = 0
     const chain: Chain = {
       hpf,
+      preGain,
+      comp,
       worklet,
       fx,
       lfos,
@@ -293,8 +339,10 @@ export class MicEngine {
       ws.send(frame)
     }
     source.connect(hpf, outputIndex)
-    hpf.connect(worklet)
-    hpf.connect(tap)
+    hpf.connect(preGain)
+    preGain.connect(comp)
+    comp.connect(worklet)
+    comp.connect(tap)
     tap.connect(mute)
     mute.connect(this.ctx.destination)
     worklet.connect(driveDry)
@@ -315,6 +363,8 @@ export class MicEngine {
   }
 
   applyMic(index: 0 | 1, s: MicSettings, songKey: SongKey | null): void {
+    this.lastMics[index] = s
+    this.lastKey = songKey
     const chain = this.chains[index]
     if (!chain) return
     const key = effectiveKey(s, songKey)
@@ -327,12 +377,17 @@ export class MicEngine {
     })
     const now = this.ctx.currentTime
     const drive = s.drive / 100
+    // Amplificação na entrada do canal: boost em dB (0..+36 dB = 1x..63x) multiplicado pelo ganho acima de 100%
+    const boostLinear = Math.pow(10, (s.boost_db ?? 0) / 20)
+    const preGainVal = boostLinear * Math.max(1, s.gain)
+    const postGainVal = Math.min(1, s.gain)
+    chain.preGain.gain.setTargetAtTime(preGainVal, now, 0.05)
     chain.driveIn.gain.setTargetAtTime(1 + drive * 12, now, 0.05)
     chain.driveWet.gain.setTargetAtTime(drive * 0.45, now, 0.05)
     chain.driveDry.gain.setTargetAtTime(1 - drive * 0.5, now, 0.05)
     chain.double.gain.setTargetAtTime((s.double / 100) * 0.7, now, 0.05)
     chain.echoSend.gain.setTargetAtTime((s.echo / 100) * 0.5, now, 0.05)
-    chain.gain.gain.setTargetAtTime(s.gain, now, 0.05)
+    chain.gain.gain.setTargetAtTime(postGainVal, now, 0.05)
   }
 
   /** Melodia do vocal original (já no tom que está tocando) para o autotune guiado; null desliga. */
@@ -356,13 +411,24 @@ export class MicEngine {
     this.reverbSend.gain.setTargetAtTime(target, this.ctx.currentTime, 0.1)
   }
 
-  level(index: 0 | 1): number {
+  meter(index: 0 | 1): MeterInfo {
     const chain = this.chains[index]
-    if (!chain) return 0
+    if (!chain) return { rms: 0, peak: 0, db: -100, clipping: false }
     chain.analyser.getFloatTimeDomainData(this.levelBuf)
     let sum = 0
-    for (let i = 0; i < this.levelBuf.length; i++) sum += this.levelBuf[i] * this.levelBuf[i]
-    return Math.sqrt(sum / this.levelBuf.length)
+    let peak = 0
+    for (let i = 0; i < this.levelBuf.length; i++) {
+      const v = Math.abs(this.levelBuf[i])
+      sum += v * v
+      if (v > peak) peak = v
+    }
+    const rms = Math.sqrt(sum / this.levelBuf.length)
+    const db = rms > 0.00001 ? Math.max(-100, Math.round(20 * Math.log10(rms))) : -100
+    return { rms, peak, db, clipping: peak >= 0.95 }
+  }
+
+  level(index: 0 | 1): number {
+    return this.meter(index).rms
   }
 
   pitch(index: 0 | 1): PitchInfo | null {
@@ -380,10 +446,13 @@ export class MicEngine {
 
   private stopInputs(): void {
     for (const s of this.sources) s.disconnect()
+    for (const sp of this.splitters) sp.disconnect()
     for (const st of this.streams) st.getTracks().forEach((t) => t.stop())
     for (const c of this.chains) {
       if (!c) continue
       c.hpf.disconnect()
+      c.preGain.disconnect()
+      c.comp.disconnect()
       c.worklet.disconnect()
       for (const n of c.fx) n.disconnect()
       for (const o of c.lfos) o.stop()
@@ -401,6 +470,7 @@ export class MicEngine {
       }
     }
     this.sources = []
+    this.splitters = []
     this.streams = []
     this.chains = [null, null]
   }

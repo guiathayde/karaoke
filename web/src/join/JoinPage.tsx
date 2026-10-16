@@ -9,6 +9,7 @@ import type {
   LibraryData,
   LibraryWhere,
   MicSettings,
+  MusicSettings,
   QueueEntry,
   ReverbSettings,
   SearchResult,
@@ -333,6 +334,7 @@ function Library({ state, me, onMsg }: { state: State; me: Singer; onMsg: (msg: 
   const [tab, setTab] = useState<LibraryTab>('local')
   const [filter, setFilter] = useState('')
   const [text, setText] = useState<string | null>(null)
+  const [confirmDel, setConfirmDel] = useState<string | null>(null)
   const textRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
@@ -390,6 +392,25 @@ function Library({ state, me, onMsg }: { state: State; me: Singer; onMsg: (msg: 
   const removeRequest = (ytId: string) =>
     api(`/api/requests/${ytId}`, { method: 'DELETE' }).catch((err) => onMsg(err instanceof Error ? err.message : 'Falha'))
 
+  const deleteSong = async (ytId: string) => {
+    try {
+      await api(`/api/songs/${ytId}`, { method: 'DELETE' })
+      setConfirmDel(null)
+      setData((prev) =>
+        prev
+          ? {
+              ...prev,
+              local: prev.local.filter((s) => s.video.yt_id !== ytId),
+              drive: prev.drive.filter((e) => e.yt_id !== ytId),
+            }
+          : prev,
+      )
+      onMsg('Música removida')
+    } catch (err) {
+      onMsg(err instanceof Error ? err.message : 'Falha ao remover')
+    }
+  }
+
   const local = data.local.filter((s) => match(s.video.title, s.video.channel))
   const drive = data.drive.filter((s) => match(s.title, s.channel))
   const requests = data.requests.filter((r) => match(r.video.title, r.video.channel))
@@ -435,6 +456,25 @@ function Library({ state, me, onMsg }: { state: State; me: Singer; onMsg: (msg: 
                 >
                   {inQueue.has(s.video.yt_id) ? 'De novo' : 'Adicionar'}
                 </button>
+                {me.is_host &&
+                  (confirmDel === s.video.yt_id ? (
+                    <button
+                      className="primary"
+                      style={{ background: 'var(--err)' }}
+                      onClick={() => deleteSong(s.video.yt_id)}
+                      title="Confirmar remoção"
+                    >
+                      Apagar
+                    </button>
+                  ) : (
+                    <button
+                      className="ghost"
+                      onClick={() => setConfirmDel(s.video.yt_id)}
+                      title="Apagar música do Mac"
+                    >
+                      ✕
+                    </button>
+                  ))}
               </li>
             ))}
           </ul>
@@ -457,6 +497,25 @@ function Library({ state, me, onMsg }: { state: State; me: Singer; onMsg: (msg: 
                     {e.channel} {e.duration ? `· ${fmtDuration(e.duration)}` : ''} · {e.pack ?? 'pacote desconhecido'}
                   </div>
                 </div>
+                {me.is_host &&
+                  (confirmDel === e.yt_id ? (
+                    <button
+                      className="primary"
+                      style={{ background: 'var(--err)' }}
+                      onClick={() => deleteSong(e.yt_id)}
+                      title="Confirmar remoção do catálogo"
+                    >
+                      Apagar
+                    </button>
+                  ) : (
+                    <button
+                      className="ghost"
+                      onClick={() => setConfirmDel(e.yt_id)}
+                      title="Remover do catálogo"
+                    >
+                      ✕
+                    </button>
+                  ))}
               </li>
             ))}
           </ul>
@@ -706,6 +765,7 @@ function Me({ state, me, onMsg }: { state: State; me: Singer; onMsg: (msg: strin
       </section>
       {me.mic && card(me.mic)}
       {me.is_host && [1, 2].filter((n) => n !== me.mic).map(card)}
+      {canControl(state, me) && <MusicCard settings={state.audio.music} onMsg={onMsg} />}
       {canControl(state, me) && <GuideCard settings={state.audio.guide} onMsg={onMsg} />}
       {me.is_host && <ReverbCard settings={state.audio.reverb} onMsg={onMsg} />}
       {me.is_host && <ImportCard onMsg={onMsg} />}
@@ -824,6 +884,24 @@ function AutotuneCard({
   return (
     <section className="card">
       <h2>Voz do mic {n}</h2>
+      <SliderField
+        label="Boost de entrada (pré-ganho)"
+        value={settings.boost_db ?? 0}
+        min={0}
+        max={36}
+        unit=" dB"
+        onChange={(v) => send({ boost_db: v })}
+      />
+      <SliderField
+        label="Volume do mic"
+        value={Math.round(settings.gain * 100)}
+        max={400}
+        onChange={(v) => send({ gain: v / 100 })}
+      />
+      <p className="muted hint">
+        O Boost de entrada amplifica o microfone antes do autotune e da pontuação (ideal para interfaces USB como a
+        Q-12).
+      </p>
       <div className="row wrap">
         {PRESETS.map((p) => (
           <button key={p.id} className={preset?.id === p.id ? 'primary' : ''} onClick={() => send(p.values)}>
@@ -903,6 +981,18 @@ function canControl(state: State, me: Singer): boolean {
   if (me.is_host) return true
   const current = state.queue.find((e) => e.id === state.player.entry_id)
   return Boolean(current && current.singer_ids.includes(me.id))
+}
+
+function MusicCard({ settings, onMsg }: { settings: MusicSettings; onMsg: (msg: string) => void }) {
+  const send = (body: Record<string, unknown>) =>
+    api('/api/audio/music', { body }).catch((err) => onMsg(err instanceof Error ? err.message : 'Falha'))
+  return (
+    <section className="card">
+      <h2>Música</h2>
+      <SliderField label="Volume da música" value={settings.volume} onChange={(v) => send({ volume: v })} />
+      <p className="muted hint">Abaixe se a voz some no meio da música. A voz guia acompanha este volume.</p>
+    </section>
+  )
 }
 
 function GuideCard({ settings, onMsg }: { settings: GuideSettings; onMsg: (msg: string) => void }) {
