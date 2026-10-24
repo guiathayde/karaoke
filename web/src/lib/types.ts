@@ -119,6 +119,7 @@ export interface MicSettings {
   scale: Scale
   gain: number // volume do mic, 0..4
   boost_db: number // pré-ganho digital na entrada do canal, 0..36 dB (antes da detecção de nota)
+  denoise: number // supressão de ruído (noise gate adaptativo), 0..100; 0 = desligada
   auto_key: boolean
   follow_melody: boolean
   double: number // 0..100

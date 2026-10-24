@@ -898,9 +898,11 @@ function AutotuneCard({
         max={400}
         onChange={(v) => send({ gain: v / 100 })}
       />
+      <SliderField label="Supressão de ruído" value={settings.denoise ?? 0} onChange={(v) => send({ denoise: v })} />
       <p className="muted hint">
         O Boost de entrada amplifica o microfone antes do autotune e da pontuação (ideal para interfaces USB como a
-        Q-12).
+        Q-12). A supressão de ruído abaixa o mic quando ninguém canta nele (chiado e barulho da sala; 0 = desligada).
+        Se cortar o começo das frases, diminua.
       </p>
       <div className="row wrap">
         {PRESETS.map((p) => (

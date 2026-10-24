@@ -1,4 +1,4 @@
-/* Motor de áudio dos microfones (roda na tela do palco): captura, autotune e efeitos por canal, eco e reverb. */
+/* Motor de áudio dos microfones (roda na tela do palco): captura, supressão de ruído, autotune e efeitos por canal, eco e reverb. */
 
 import type { MicSettings, ReverbSettings, Scale, SongKey } from '../lib/types'
 
@@ -16,6 +16,14 @@ export interface PitchInfo {
   shift: number
   rms: number
   guided: boolean // a correção está seguindo a nota do vocal original
+}
+
+/** Estado da supressão de ruído de um canal; níveis em dBFS depois do pré-ganho, como no medidor. */
+export interface NoiseInfo {
+  open: boolean // alguém cantando: o sinal passa inteiro
+  floor: number | null // piso de ruído estimado (null enquanto não há medida)
+  level: number
+  gain: number // atenuação aplicada agora (0 = nenhuma)
 }
 
 export interface MelodyTrack {
@@ -53,6 +61,9 @@ export interface MeterInfo {
 
 interface Chain {
   hpf: BiquadFilterNode
+  gate: AudioWorkletNode
+  noise: NoiseInfo // como o worklet relata, antes do pré-ganho
+  inputGainDb: number
   preGain: GainNode
   comp: DynamicsCompressorNode
   worklet: AudioWorkletNode
@@ -147,6 +158,7 @@ export class MicEngine {
     // o autotune guiado precisa saber em que ponto do vídeo estamos
     window.setInterval(() => this.postClock(), 250)
     this.workletReady = Promise.all([
+      this.ctx.audioWorklet.addModule('/worklets/noisegate.js'),
       this.ctx.audioWorklet.addModule('/worklets/autotune.js'),
       this.ctx.audioWorklet.addModule('/worklets/tap.js'),
     ]).then(() => undefined)
@@ -237,6 +249,14 @@ export class MicEngine {
     hpf.frequency.value = 80
     hpf.channelCount = 1
     hpf.channelCountMode = 'explicit'
+    // Supressão de ruído (noise gate adaptativo) antes do pré-ganho: o boost não desloca o piso de ruído
+    const gate = new AudioWorkletNode(this.ctx, 'noisegate', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      channelCount: 1,
+      channelCountMode: 'explicit',
+    })
     // Pré-amplificador digital individual do canal (atua logo após o ChannelSplitterNode e antes do autotune/pontuação)
     const preGain = this.ctx.createGain()
     preGain.channelCount = 1
@@ -308,6 +328,9 @@ export class MicEngine {
     mute.gain.value = 0
     const chain: Chain = {
       hpf,
+      gate,
+      noise: { open: true, floor: null, level: -100, gain: 0 },
+      inputGainDb: 0,
       preGain,
       comp,
       worklet,
@@ -325,6 +348,9 @@ export class MicEngine {
       analyser,
       pitch: { freq: 0, conf: 0, shift: 0, rms: 0, guided: false },
     }
+    gate.port.onmessage = (e) => {
+      chain.noise = e.data as NoiseInfo
+    }
     worklet.port.onmessage = (e) => {
       chain.pitch = e.data as PitchInfo
     }
@@ -339,7 +365,8 @@ export class MicEngine {
       ws.send(frame)
     }
     source.connect(hpf, outputIndex)
-    hpf.connect(preGain)
+    hpf.connect(gate)
+    gate.connect(preGain)
     preGain.connect(comp)
     comp.connect(worklet)
     comp.connect(tap)
@@ -368,6 +395,7 @@ export class MicEngine {
     const chain = this.chains[index]
     if (!chain) return
     const key = effectiveKey(s, songKey)
+    chain.gate.port.postMessage({ strength: (s.denoise ?? 0) / 100 })
     chain.worklet.port.postMessage({
       enabled: s.enabled,
       strength: s.strength / 100,
@@ -381,6 +409,7 @@ export class MicEngine {
     const boostLinear = Math.pow(10, (s.boost_db ?? 0) / 20)
     const preGainVal = boostLinear * Math.max(1, s.gain)
     const postGainVal = Math.min(1, s.gain)
+    chain.inputGainDb = 20 * Math.log10(preGainVal)
     chain.preGain.gain.setTargetAtTime(preGainVal, now, 0.05)
     chain.driveIn.gain.setTargetAtTime(1 + drive * 12, now, 0.05)
     chain.driveWet.gain.setTargetAtTime(drive * 0.45, now, 0.05)
@@ -435,6 +464,13 @@ export class MicEngine {
     return this.chains[index]?.pitch ?? null
   }
 
+  noise(index: 0 | 1): NoiseInfo | null {
+    const chain = this.chains[index]
+    if (!chain) return null
+    const { noise: n, inputGainDb: g } = chain
+    return { ...n, floor: n.floor === null ? null : n.floor + g, level: n.level + g }
+  }
+
   hasChain(index: 0 | 1): boolean {
     return this.chains[index] !== null
   }
@@ -451,6 +487,7 @@ export class MicEngine {
     for (const c of this.chains) {
       if (!c) continue
       c.hpf.disconnect()
+      c.gate.disconnect()
       c.preGain.disconnect()
       c.comp.disconnect()
       c.worklet.disconnect()
@@ -460,6 +497,7 @@ export class MicEngine {
       c.tap.disconnect()
       c.mute.disconnect()
       c.gain.disconnect()
+      c.gate.port.onmessage = null
       c.worklet.port.onmessage = null
       c.tap.port.onmessage = null
       const ws = c.ws

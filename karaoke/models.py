@@ -89,6 +89,7 @@ class MicSettings(BaseModel):
     scale: Scale = "chromatic"
     gain: float = Field(1.0, ge=0, le=4)  # volume do mic (4 = +12 dB)
     boost_db: int = Field(0, ge=0, le=36)  # pré-ganho digital na entrada do canal (0..+36 dB, antes do autotune)
+    denoise: int = Field(30, ge=0, le=100)  # supressão de ruído (noise gate adaptativo); 0 = desligada
     auto_key: bool = True  # usa a tonalidade detectada da música (key/scale ficam como reserva)
     follow_melody: bool = False  # corrige para a nota do vocal original em vez da nota mais próxima da escala
     double: int = Field(0, ge=0, le=100)  # dobra de voz
@@ -200,6 +201,7 @@ class MicUpdateBody(BaseModel):
     scale: Scale | None = None
     gain: float | None = Field(None, ge=0, le=4)
     boost_db: int | None = Field(None, ge=0, le=36)
+    denoise: int | None = Field(None, ge=0, le=100)
     auto_key: bool | None = None
     follow_melody: bool | None = None
     double: int | None = Field(None, ge=0, le=100)

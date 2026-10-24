@@ -46,13 +46,15 @@ function MicCardControls({
 }) {
   const [boostDb, setBoostDb] = useState(settings.boost_db ?? 0)
   const [gainPct, setGainPct] = useState(Math.round(settings.gain * 100))
+  const [denoise, setDenoise] = useState(settings.denoise ?? 0)
   const timer = useRef<number | undefined>(undefined)
 
   useEffect(() => setBoostDb(settings.boost_db ?? 0), [settings.boost_db])
   useEffect(() => setGainPct(Math.round(settings.gain * 100)), [settings.gain])
+  useEffect(() => setDenoise(settings.denoise ?? 0), [settings.denoise])
 
   const sendPatch = (patch: Partial<MicSettings>) => {
-    engine.applyMic(index, { ...settings, boost_db: boostDb, gain: gainPct / 100, ...patch }, songKey)
+    engine.applyMic(index, { ...settings, boost_db: boostDb, gain: gainPct / 100, denoise, ...patch }, songKey)
     window.clearTimeout(timer.current)
     timer.current = window.setTimeout(() => {
       void api(`/api/audio/mic/${index + 1}`, { body: patch }).catch(() => undefined)
@@ -93,6 +95,22 @@ function MicCardControls({
           const v = Number(e.target.value)
           setGainPct(v)
           sendPatch({ gain: v / 100 })
+        }}
+      />
+      <label className="muted" style={{ display: 'block', fontSize: 13 }}>
+        Supressão de ruído: <strong>{denoise ? `${denoise}%` : 'desligada'}</strong>
+      </label>
+      <input
+        className="slider"
+        type="range"
+        min={0}
+        max={100}
+        step={5}
+        value={denoise}
+        onChange={(e) => {
+          const v = Number(e.target.value)
+          setDenoise(v)
+          sendPatch({ denoise: v })
         }}
       />
     </div>
@@ -188,6 +206,7 @@ export function MicPanel({
           {([0, 1] as const).map((i) => {
             const active = engine.hasChain(i)
             const pitch = engine.pitch(i)
+            const noise = engine.noise(i)
             const m = active ? engine.meter(i) : { rms: 0, peak: 0, db: -100, clipping: false }
             const s = audio.mics[i]
             const chLabel =
@@ -221,6 +240,16 @@ export function MicPanel({
                   {active && pitch?.shift ? ` · correção ${pitch.shift > 0 ? '+' : ''}${pitch.shift.toFixed(2)} st` : ''}
                   {active && pitch?.guided ? ' · seguindo o vocal' : ''}
                 </div>
+                {noise && (
+                  <div className="muted">
+                    Ruído de fundo: {noise.floor === null ? '–' : `${Math.round(noise.floor)} dB`} ·{' '}
+                    {!s.denoise
+                      ? 'supressão desligada'
+                      : noise.open
+                        ? 'voz passando'
+                        : `silenciando (${Math.round(noise.gain)} dB)`}
+                  </div>
+                )}
                 <div className="muted">
                   Autotune {s.enabled ? `${s.strength}%` : 'desligado'} · {keyText(effectiveKey(s, songKey))}
                   {s.auto_key ? ' (automático)' : ''}
@@ -234,7 +263,9 @@ export function MicPanel({
         <p className="muted">
           Reverb: {audio.reverb.enabled ? `${audio.reverb.amount}%` : 'desligado'} · Música: {audio.music.volume}%. O{' '}
           <strong>Boost de entrada</strong> amplifica cada canal via <code>GainNode</code> antes do detector de notas e
-          da pontuação, com compressor/limitador integrado para não distorcer.
+          da pontuação, com compressor/limitador integrado para não distorcer. A <strong>Supressão de ruído</strong>{' '}
+          abaixa o canal quando ninguém canta nele (chiado do boost, zumbido, barulho da sala), sem atrasar a voz; ela
+          não tira a música da TV que vaza no mic enquanto alguém canta.
         </p>
       </div>
     </div>
